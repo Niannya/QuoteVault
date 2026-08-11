@@ -45,13 +45,14 @@ public sealed class MainForm : Form
         _store = store;
         Text = "QuoteVault";
         FormBorderStyle = FormBorderStyle.None;
-        BackColor = Color.FromArgb(247, 247, 245);
+        BackColor = Color.FromArgb(17, 18, 16);
         Size = new Size(1440, 900);
         MinimumSize = new Size(1120, 720);
         StartPosition = FormStartPosition.CenterScreen;
         KeyPreview = true;
 
         _webView.Dock = DockStyle.Fill;
+        _webView.DefaultBackgroundColor = Color.FromArgb(17, 18, 16);
         _webView.CreationProperties = new CoreWebView2CreationProperties
         {
             UserDataFolder = Path.Combine(_store.RootPath, "webview2")
@@ -78,7 +79,7 @@ public sealed class MainForm : Form
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000)) return;
         var cornerPreference = DwmCornerRound;
         DwmSetWindowAttribute(Handle, DwmWindowCornerPreference, ref cornerPreference, sizeof(int));
-        var borderColor = ColorTranslator.ToWin32(Color.FromArgb(218, 218, 214));
+        var borderColor = ColorTranslator.ToWin32(Color.FromArgb(53, 54, 49));
         DwmSetWindowAttribute(Handle, DwmBorderColor, ref borderColor, sizeof(int));
     }
 

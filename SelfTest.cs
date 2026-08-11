@@ -83,6 +83,9 @@ internal static class SelfTest
             store.Save();
             store.RestoreBackup(backup);
             Assert(store.State.People.Count == 1, "备份恢复");
+            Assert(Directory.EnumerateFiles(Path.Combine(root, "backups"), "*.zip").Any(), "恢复前安全备份");
+            AssertThrows<InvalidDataException>(() =>
+                store.GetImageFile(new ScreenshotItem { StoredFileName = "../escape.png" }), "截图文件名路径校验");
             Console.WriteLine("SELF-TEST PASSED");
             return 0;
         }
@@ -101,5 +104,18 @@ internal static class SelfTest
     private static void Assert(bool condition, string name)
     {
         if (!condition) throw new InvalidOperationException("断言失败：" + name);
+    }
+
+    private static void AssertThrows<TException>(Action action, string name) where TException : Exception
+    {
+        try
+        {
+            action();
+        }
+        catch (TException)
+        {
+            return;
+        }
+        throw new InvalidOperationException("断言失败：" + name);
     }
 }

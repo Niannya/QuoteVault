@@ -20,6 +20,7 @@ QuoteVault 是一款 Windows 本地聊天截图管理工具。它可以从剪贴
 
 ### 浏览与批量管理
 
+- 默认采用深色界面，并针对窗口化与全屏布局进行适配。
 - 卡片视图适合同时浏览更多截图，列表视图用于查看更完整的消息摘要。
 - 支持鼠标框选、多选、批量移动和批量回收。
 - 右侧面板提供原图预览、截图添加和消息编辑。
@@ -65,10 +66,11 @@ dotnet publish -c Release -r win-x64 --self-contained false
 ```text
 %LocalAppData%\QuoteVault\
 ├── data.json
-└── images\
+├── images\
+└── backups\
 ```
 
-图片和索引只保存在本机，不会上传到云端。备份功能会将 `data.json` 与 `images` 一并打包。
+图片和索引只保存在本机，不会上传到云端。备份功能会将 `data.json` 与 `images` 一并打包；恢复前的安全备份保存在 `backups` 中。
 
 ## OCR 说明
 
@@ -84,4 +86,3 @@ dotnet publish -c Release -r win-x64 --self-contained false
 - `OcrService.cs`：离线 OCR 与群昵称候选提取。
 - `Models.cs`：数据模型。
 - `SelfTest.cs`：无需 UI 的基础自检。
-- `docs/PRODUCT-SPEC.md`：当前需求基线。

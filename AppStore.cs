@@ -35,8 +35,10 @@ public sealed class AppStore
         if (!File.Exists(DataFilePath)) return new AppState();
         try
         {
-            return JsonSerializer.Deserialize<AppState>(File.ReadAllText(DataFilePath), _jsonOptions)
-                   ?? new AppState();
+            var state = JsonSerializer.Deserialize<AppState>(File.ReadAllText(DataFilePath), _jsonOptions)
+                        ?? new AppState();
+            NormalizeState(state);
+            return state;
         }
         catch
         {
@@ -57,7 +59,7 @@ public sealed class AppStore
         }
     }
 
-    public string GetImageFile(ScreenshotItem item) => Path.Combine(ImagePath, item.StoredFileName);
+    public string GetImageFile(ScreenshotItem item) => Path.Combine(ImagePath, ValidateStoredFileName(item.StoredFileName));
 
     public static string ComputeSha256(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
 
@@ -120,7 +122,9 @@ public sealed class AppStore
         if (archive.GetEntry("data.json") is null)
             throw new InvalidDataException("备份中没有 data.json。\n请选择由 QuoteVault 创建的备份文件。");
 
-        var safety = Path.Combine(Path.GetDirectoryName(sourceZip)!,
+        var safetyDirectory = Path.Combine(RootPath, "backups");
+        Directory.CreateDirectory(safetyDirectory);
+        var safety = Path.Combine(safetyDirectory,
             $"QuoteVault-恢复前备份-{DateTime.Now:yyyyMMdd-HHmmss}.zip");
         CreateBackup(safety);
 
@@ -132,9 +136,16 @@ public sealed class AppStore
             var extractedState = Path.Combine(extract, "data.json");
             var parsed = JsonSerializer.Deserialize<AppState>(File.ReadAllText(extractedState), _jsonOptions)
                          ?? throw new InvalidDataException("备份数据无法读取。");
+            NormalizeState(parsed);
 
             Directory.CreateDirectory(ImagePath);
             var extractedImages = Path.Combine(extract, "images");
+            foreach (var screenshot in parsed.Screenshots)
+            {
+                var fileName = ValidateStoredFileName(screenshot.StoredFileName);
+                if (!File.Exists(Path.Combine(extractedImages, fileName)))
+                    throw new InvalidDataException($"备份缺少截图文件：{fileName}");
+            }
             foreach (var current in Directory.EnumerateFiles(ImagePath)) File.Delete(current);
             if (Directory.Exists(extractedImages))
             {
@@ -146,8 +157,51 @@ public sealed class AppStore
         }
         finally
         {
-            if (Directory.Exists(extract)) Directory.Delete(extract, true);
+            try
+            {
+                if (Directory.Exists(extract)) Directory.Delete(extract, true);
+            }
+            catch
+            {
+                // 临时目录清理失败不应把已经完成的恢复报告为失败。
+            }
         }
+    }
+
+    private static void NormalizeState(AppState state)
+    {
+        state.Categories ??= [];
+        state.People ??= [];
+        state.NicknameMappings ??= [];
+        state.Screenshots ??= [];
+        state.Settings ??= new AppSettings();
+        foreach (var category in state.Categories) category.Name ??= "未命名群组";
+        foreach (var person in state.People)
+        {
+            person.DisplayName ??= "未命名成员";
+            person.CategoryIds ??= [];
+        }
+        foreach (var screenshot in state.Screenshots)
+        {
+            ValidateStoredFileName(screenshot.StoredFileName);
+            screenshot.OriginalFileName ??= screenshot.StoredFileName;
+            screenshot.OcrRawText ??= string.Empty;
+            screenshot.DetectedNicknames ??= [];
+            screenshot.IgnoredNicknames ??= [];
+            screenshot.PersonIds ??= [];
+            screenshot.Messages ??= [];
+            screenshot.Keywords ??= [];
+            foreach (var message in screenshot.Messages) message.Text ??= string.Empty;
+        }
+    }
+
+    private static string ValidateStoredFileName(string? fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName) ||
+            !string.Equals(fileName, Path.GetFileName(fileName), StringComparison.Ordinal) ||
+            fileName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            throw new InvalidDataException("截图索引包含无效的存储文件名。");
+        return fileName;
     }
 
     private static string NormalizeExtension(string extension)

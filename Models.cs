@@ -72,12 +72,3 @@ public sealed class AppSettings
 
 public sealed record OcrOutput(string RawText, float Confidence, IReadOnlyList<string> Lines,
     IReadOnlyList<string> NicknameCandidates);
-
-public enum LibraryView
-{
-    All,
-    NeedsReview,
-    Trash,
-    Person,
-    Category
-}

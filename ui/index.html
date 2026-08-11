@@ -6,12 +6,13 @@
   <title>QuoteVault UI v2</title>
   <style>
     :root {
-      --bg:#f7f7f5; --panel:#ffffff; --sidebar:#f0f0ed; --line:#deded9;
-      --line-soft:#e9e9e5; --text:#20201e; --muted:#777771; --soft:#f3f3f0;
-      --accent:#1f1f1d; --selected:#e7e7e2; --blue:#537cda; --danger:#b44848;
+      color-scheme:dark;
+      --bg:#111210; --panel:#1a1b19; --sidebar:#151614; --line:#353631;
+      --line-soft:#292a27; --text:#eeeeea; --muted:#999a93; --soft:#242522;
+      --accent:#eeeeea; --selected:#2b2c28; --blue:#7898ed; --danger:#ef8080;
     }
     *{box-sizing:border-box}
-    html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#d9d9d5}
+    html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#0c0d0c}
     body{font-family:"Segoe UI Variable Text","Microsoft YaHei UI","Microsoft YaHei",sans-serif;color:var(--text);user-select:none}
     button,input,textarea,select{font:inherit}.chat-bubble,input,textarea,[contenteditable="true"]{user-select:text}
     button{cursor:pointer}
@@ -108,6 +109,23 @@
       .lib-toolbar{gap:6px}.iconbtn{width:34px;height:34px}
       .workbench{grid-template-rows:48px 1fr}.tabs{font-size:12px}
     }
+    /* QuoteVault 默认使用深色主题。集中覆盖旧版组件中的固定浅色值，避免局部亮块。 */
+    .titlebar,.statusbar{background:#141513}.appmark{background:var(--accent);color:#171816}.version{color:#85867f}
+    .window-action{color:#aaa}.window-action:hover{background:#292a27;color:var(--text)}.window-action.close:hover{background:#542a2a;color:#ffb0aa}
+    .topnav{background:var(--panel)}.tab.active{color:var(--text)}.topitem.active:after,.tab.active:after{background:var(--accent)}
+    .sidehead button{color:#aaa}.sidehead button:hover{background:#292a27}.search,.lib-toolbar .search{background:#20211e;border-color:var(--line);color:#8f9089}.search input,.keyword-input,.field,.modal-field input,.hotkey-row select{color:var(--text);background:#20211e}.search input::placeholder,.keyword-input::placeholder,.message-text::placeholder{color:#777870}.search-clear:hover{background:#30312d;color:var(--text)}
+    .group-title,.friend{color:#b8b9b2}.friend:hover{background:#242522}.friend.active{background:var(--selected);color:var(--text)}.count,.sidefoot{color:#777870}
+    .sidehead button:hover,.side-action:hover,.side-action.active{background:#242522}.side-action{background:#1b1c19;border-color:var(--line);color:#a4a59e}.side-action .badge,.badge{background:#30312d;color:#c9cac3}
+    .iconbtn,.btn{background:#20211e;border-color:var(--line);color:#d4d5ce}.iconbtn:hover,.btn:hover{background:#292a27}.iconbtn.active,.btn.primary{background:var(--accent);border-color:var(--accent);color:#161715}
+    .card{background:var(--panel);border-color:var(--line-soft);box-shadow:0 1px 2px #0004}.card:hover{border-color:#51534c}.card.selected{border-color:#888a81;box-shadow:0 0 0 2px #ffffff12}.thumb,.bigpreview{background:#10110f}.card-more{background:#20211ee8;color:#bbb;box-shadow:0 2px 8px #0006}.card-more:hover{background:#2d2e2a;color:#fff}
+    .section-title,.formrow label{color:#a1a29b}.chip,.message-box{background:var(--soft);color:#d5d6cf}.msg-person{color:#a5a69f}.actions{background:var(--panel)}
+    .dropzone{background:#171816;border-color:#494a44;color:#aaa}.dropicon{background:#292a27;color:#ccc}.pending-note,.pending-stat{background:#20211e;border-color:var(--line);color:#aaa}.edit-tip{color:#94958e}
+    .message-editor{background:#141513}.message-editor-head,.message-add{background:#1d1e1b}.message-editor-head .message-ocr:hover,.message-add:hover{background:#292a27;color:#fff}.message-row{background:#1d1e1b;border-color:var(--line-soft)}.message-speaker,.message-text{background:#151614;border-color:var(--line);color:var(--text)}.message-remove:hover{background:#4c2828}.chat-editor{background:#141513}.chat-editor-head,.chat-add{background:#1d1e1b}.chat-bubble{background:#22231f;border-color:#3a3b36;color:var(--text)}
+    .empty-state h2{color:#ddd}.side-shortcut{color:#aaa}.side-shortcut:hover,.side-shortcut.active{background:#282925;color:var(--text)}.drag-over{outline-color:#ddd!important;background:#30312d!important}
+    .global-results{border-color:var(--line)}.global-shot:hover{background:#242522}.batchbar{background:var(--panel);box-shadow:0 6px 24px #0005}
+    .context-menu,.inline-modal{background:#1d1e1b;border-color:var(--line);box-shadow:0 18px 48px #0008}.context-menu button{color:#ddd}.context-menu button:hover,.library-choice:hover{background:#2a2b27}.context-menu button.danger:hover{background:#472727}.modal-layer{background:#0009}.inline-modal p,.modal-field label,.library-group-title{color:#999a93}.library-picker{background:#151614;border-color:var(--line)}.library-choice{color:#ddd}.library-choice.active{background:#30312d}
+    .settings-page{background:var(--bg)}.settings-card{background:var(--panel);border-color:var(--line)}.settings-card p,.settings-lead{color:#999a93}.hotkey-row input{accent-color:#ddd}
+    *{scrollbar-color:#55564f #1a1b19}
   </style>
 </head>
 <body>
@@ -135,7 +153,7 @@
         <div class="group"><div class="group-title"><span class="chev">▶</span>工作群</div></div>
       </div>
       <div class="side-actions"><button class="side-action" id="pendingNav" title="待处理图库" aria-label="待处理图库"><svg viewBox="0 0 24 24"><path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5"/></svg><span class="badge" id="pendingCount">0</span></button><button class="side-action" id="trashNav" title="回收站" aria-label="回收站"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg><span class="badge" id="trashCount">0</span></button></div>
-      <div class="sidefoot">本地存储 · 最近备份：今天 09:42</div>
+      <div class="sidefoot">本地存储 · 数据仅保存在此电脑</div>
     </aside>
 
     <main class="library">
