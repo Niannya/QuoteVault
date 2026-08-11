@@ -25,14 +25,15 @@ QuoteVault 是一款 Windows 本地聊天截图管理工具。它可以从剪贴
 需要 Windows 和 [.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0)。
 
 ```powershell
-cd D:\Project\QuoteVault
+git clone https://github.com/Niannya/QuoteVault.git
+cd QuoteVault
 dotnet run
 ```
 
 或直接运行发布产物：
 
 ```text
-D:\Project\QuoteVault\bin\Release\net9.0-windows\win-x64\publish\QuoteVault.exe
+bin\Release\net9.0-windows\win-x64\publish\QuoteVault.exe
 ```
 
 ## 构建与验证
