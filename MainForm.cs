@@ -131,6 +131,7 @@ public sealed class MainForm : Form
                     if (payload.TryGetProperty("name", out var topView)) _topView = topView.GetString() ?? "library";
                     _selectedScreenshotId = null;
                     if (_topView is "pending" or "trash") _selectedPersonId = null;
+                    await SendStateAsync("preview");
                     break;
                 case "selectPerson":
                     _selectedPersonId = ReadGuid(payload, "id");
@@ -270,6 +271,7 @@ public sealed class MainForm : Form
     {
         if (!_webReady || _webView.CoreWebView2 is null) return;
         if (panel is not null) _activePanel = panel;
+        NormalizeSelection();
         var state = new
         {
             people = _store.State.People.Select(x => new
@@ -572,6 +574,8 @@ public sealed class MainForm : Form
     private void CopyImage(Guid? id)
     {
         var item = _store.State.Screenshots.FirstOrDefault(x => x.Id == id) ?? throw new FileNotFoundException("截图不存在。");
+        if (item.DeletedAt.HasValue || item.NeedsReview)
+            throw new InvalidOperationException("只有已整理图库中的截图可以复制到剪贴板。");
         using var stream = new MemoryStream(File.ReadAllBytes(_store.GetImageFile(item)));
         using var image = Image.FromStream(stream);
         Clipboard.SetImage(new Bitmap(image));
@@ -760,10 +764,31 @@ public sealed class MainForm : Form
         foreach (var item in _store.State.Screenshots.Where(x => ids.Contains(x.Id)).ToList())
         {
             if (action == "trash") _store.MoveToTrash(item);
+            else if (action == "pending")
+            {
+                item.DeletedAt = null;
+                item.NeedsReview = true;
+            }
             else if (action == "restore") _store.RestoreFromTrash(item);
             else if (action == "deleteForever") _store.PermanentlyDelete(item);
         }
+        _store.Save();
         _selectedScreenshotId = null;
+    }
+
+    private void NormalizeSelection()
+    {
+        if (_selectedScreenshotId is not Guid id) return;
+        var item = _store.State.Screenshots.FirstOrDefault(x => x.Id == id);
+        var valid = item is not null && (_topView switch
+        {
+            "trash" => item.DeletedAt.HasValue,
+            "pending" => !item.DeletedAt.HasValue && item.NeedsReview,
+            "library" => _selectedPersonId.HasValue && !item.DeletedAt.HasValue && !item.NeedsReview &&
+                         item.PersonIds.Contains(_selectedPersonId.Value),
+            _ => false
+        });
+        if (!valid) _selectedScreenshotId = null;
     }
 
     private async Task QuickImportClipboardAsync()

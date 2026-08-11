@@ -63,29 +63,42 @@ public sealed partial class OcrService
     {
         var messages = new List<string>();
         var nicknames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var currentMessage = new List<string>();
+
+        void FlushMessage()
+        {
+            if (currentMessage.Count == 0) return;
+            messages.Add(string.Join(Environment.NewLine, currentMessage).Trim());
+            currentMessage.Clear();
+        }
+
         for (var index = 0; index < lines.Count; index++)
         {
             var value = lines[index].Trim();
             var prefix = SpeakerPrefixRegex().Match(value);
             if (prefix.Success)
             {
+                FlushMessage();
                 AddIfPlausible(nicknames, prefix.Groups["name"].Value);
                 var separator = value.IndexOfAny([':', '：']);
                 if (separator >= 0 && separator + 1 < value.Length)
-                    messages.Add(value[(separator + 1)..].Trim());
+                    currentMessage.Add(value[(separator + 1)..].Trim());
                 continue;
             }
 
-            // QQ 截图常按“昵称行 → 消息气泡”排列。候选昵称必须紧跟一条消息，
-            // 因此最后一条气泡文字不会再被误判成昵称。
-            if (index + 1 < lines.Count && index % 2 == 0 && IsPlausibleNicknameLine(value))
+            // 只有带 @/#/&、等级或身份标识的强特征行才推断为昵称。
+            // 普通短句不再按奇偶行猜测，避免把换行后的消息误判成新昵称。
+            if (index + 1 < lines.Count && LooksLikeNicknameHeader(value))
             {
+                FlushMessage();
                 AddIfPlausible(nicknames, value);
                 continue;
             }
-            messages.Add(value);
+            currentMessage.Add(value);
         }
-        if (messages.Count == 0) messages.AddRange(lines.Where(x => !string.IsNullOrWhiteSpace(x)));
+        FlushMessage();
+        if (messages.Count == 0 && lines.Any(x => !string.IsNullOrWhiteSpace(x)))
+            messages.Add(string.Join(Environment.NewLine, lines.Where(x => !string.IsNullOrWhiteSpace(x))).Trim());
         return (messages, nicknames.Take(12).ToArray());
     }
 
@@ -98,6 +111,9 @@ public sealed partial class OcrService
         !SystemMessageRegex().IsMatch(value) &&
         value.Any(char.IsLetterOrDigit);
 
+    private static bool LooksLikeNicknameHeader(string value) =>
+        IsPlausibleNicknameLine(value) && NicknameHeaderRegex().IsMatch(value);
+
     private static void AddIfPlausible(HashSet<string> values, string value)
     {
         value = value.Trim(' ', '\t', ':', '：', '&', '@', '#', '·', '•', '|');
@@ -109,6 +125,9 @@ public sealed partial class OcrService
 
     [GeneratedRegex(@"^(?<name>[^:：]{1,24})\s*[:：]\s*.+$")]
     private static partial Regex SpeakerPrefixRegex();
+
+    [GeneratedRegex(@"^\s*[@&#＆]|\bLV\s*\d+|(?:群主|管理员|王者|等级)\s*$", RegexOptions.IgnoreCase)]
+    private static partial Regex NicknameHeaderRegex();
 
     [GeneratedRegex(@"[。！？?!；;，,]$")]
     private static partial Regex SentenceEndingRegex();

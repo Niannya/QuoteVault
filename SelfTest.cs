@@ -68,6 +68,12 @@ internal static class SelfTest
             var parsedChat = OcrService.SplitChatLines(["& 夕笔下若隐若现的", "越想越气（"]);
             Assert(parsedChat.Nicknames.SequenceEqual(["夕笔下若隐若现的"]) &&
                    parsedChat.Messages.SequenceEqual(["越想越气（"]), "昵称与消息分离");
+            var wrappedMessage = OcrService.SplitChatLines(["& 小明 LV10", "这是同一条消息的第一行", "这是第二行"]);
+            Assert(wrappedMessage.Messages.SequenceEqual([$"这是同一条消息的第一行{Environment.NewLine}这是第二行"]),
+                "多行气泡合并为一条消息");
+            var plainWrappedMessage = OcrService.SplitChatLines(["没有昵称的第一行", "仍然属于同一条消息"]);
+            Assert(plainWrappedMessage.Messages.SequenceEqual([$"没有昵称的第一行{Environment.NewLine}仍然属于同一条消息"]),
+                "无昵称多行文本合并");
 
             Directory.CreateDirectory(backupRoot);
             var backup = Path.Combine(backupRoot, "backup.zip");

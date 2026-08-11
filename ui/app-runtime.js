@@ -20,7 +20,14 @@
   const $ = id => document.getElementById(id);
   const esc = value => String(value ?? '').replace(/[&<>'"]/g, ch =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[ch]));
-  const selectedScreenshot = () => state.screenshots.find(x => x.id === state.selectedScreenshotId) ?? null;
+  const selectedScreenshot = () => {
+    const shot=state.screenshots.find(x=>x.id===state.selectedScreenshotId);
+    if(!shot)return null;
+    if(state.topView==='trash')return shot.deletedAt?shot:null;
+    if(state.topView==='pending')return !shot.deletedAt&&shot.needsReview?shot:null;
+    if(state.topView==='library')return state.selectedPersonId&&!shot.deletedAt&&!shot.needsReview&&shot.personIds.includes(state.selectedPersonId)?shot:null;
+    return null;
+  };
   const memberById = id => state.people.find(x => x.id === id);
   const selectedMember = () => memberById(state.selectedPersonId);
   const screenshotMembers = shot => (shot?.personIds ?? []).map(memberById).filter(Boolean);
@@ -259,6 +266,12 @@
     button?.classList.toggle('visible',!!input?.value);
   }
 
+  function bindScreenshotDropTarget(node, action) {
+    node.addEventListener('dragover',event=>{if(dragPayload?.kind!=='screenshots'||dragPayload.sourceView!=='library')return;event.preventDefault();event.dataTransfer.dropEffect='move';node.classList.add('drag-over');});
+    node.addEventListener('dragleave',()=>node.classList.remove('drag-over'));
+    node.addEventListener('drop',event=>{if(dragPayload?.kind!=='screenshots'||dragPayload.sourceView!=='library')return;event.preventDefault();node.classList.remove('drag-over');post('batchAction',{action,ids:dragPayload.ids});resetSelectionMode();dragPayload=null;});
+  }
+
   function bindMarqueeSelection(host) {
     host.onpointerdown=event=>{
       if(event.button!==0||event.target!==host)return;
@@ -299,12 +312,12 @@
       const members=screenshotMembers(shot).map(x=>x.displayName).join('、')||'未关联成员';
       const snippet=shot.messages.find(x=>x.text.trim())?.text||'尚未识别文字';
       const detail=shot.messages.slice(0,3).map(m=>m.text).join(' · ');
-      return `<article class="card ${shot.id===state.selectedScreenshotId?'selected':''} ${selectedIds.has(shot.id)?'batch-selected':''}" draggable="true" data-shot="${shot.id}"><span class="select-dot">${checkSvg}</span><button class="card-more" data-more="${shot.id}" title="更多操作" aria-label="更多操作">${moreSvg}</button><div class="thumb"><img class="real-image" src="${esc(shot.imageUrl)}" alt="截图"/></div><div class="cardline"><span class="snippet">${esc(snippet)}</span><span class="date">${fmtDate(shot.importedAt)}</span></div><div class="mini">${esc(members)} · ${shot.messages.length} 条消息${shot.needsReview?' · 待整理':''}${shot.keywords?.length?' · #'+esc(shot.keywords.join(' #')):''}</div><div class="card-details">${esc(detail)}</div></article>`;
+      return `<article class="card ${shot.id===state.selectedScreenshotId?'selected':''} ${selectedIds.has(shot.id)?'batch-selected':''}" draggable="${state.topView==='library'}" data-shot="${shot.id}"><span class="select-dot">${checkSvg}</span><button class="card-more" data-more="${shot.id}" title="更多操作" aria-label="更多操作">${moreSvg}</button><div class="thumb"><img class="real-image" src="${esc(shot.imageUrl)}" alt="截图"/></div><div class="cardline"><span class="snippet">${esc(snippet)}</span><span class="date">${fmtDate(shot.importedAt)}</span></div><div class="mini">${esc(members)} · ${shot.messages.length} 条消息${shot.needsReview?' · 待整理':''}${shot.keywords?.length?' · #'+esc(shot.keywords.join(' #')):''}</div><div class="card-details">${esc(detail)}</div></article>`;
     }).join('');
     host.querySelectorAll('[data-shot]').forEach(card=>{
       card.onclick=e=>{if(e.target.closest('[data-more]'))return;if(selectionMode){selectedIds.has(card.dataset.shot)?selectedIds.delete(card.dataset.shot):selectedIds.add(card.dataset.shot);renderCenter();}else post('selectScreenshot',{id:card.dataset.shot});};
       card.oncontextmenu=e=>{e.preventDefault();showScreenshotMenu(e.clientX,e.clientY,card.dataset.shot);};
-      card.ondragstart=e=>{const id=card.dataset.shot;const ids=selectionMode&&selectedIds.has(id)?[...selectedIds]:[id];dragPayload={kind:'screenshots',ids,sourceMemberId:state.selectedPersonId};e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',JSON.stringify(dragPayload));};
+      card.ondragstart=e=>{if(state.topView!=='library'){e.preventDefault();return;}const id=card.dataset.shot;const ids=selectionMode&&selectedIds.has(id)?[...selectedIds]:[id];dragPayload={kind:'screenshots',ids,sourceMemberId:state.selectedPersonId,sourceView:state.topView};e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',JSON.stringify(dragPayload));};
       card.ondragend=()=>{dragPayload=null;document.querySelectorAll('.drag-over').forEach(x=>x.classList.remove('drag-over'));};
     });
     host.querySelectorAll('[data-more]').forEach(button=>button.onclick=e=>{e.stopPropagation();const r=button.getBoundingClientRect();showScreenshotMenu(r.right,r.bottom+4,button.dataset.more);});
@@ -314,7 +327,7 @@
   function showScreenshotMenu(x,y,id){
     const shot=state.screenshots.find(s=>s.id===id); if(!shot)return;
     showMenu(x,y,shot.deletedAt?[
-      {label:'复制到剪贴板',action:()=>post('copyImage',{id})},{label:'恢复到图库',action:()=>post('restoreFromTrash',{id})},{separator:true},{label:'永久删除',danger:true,action:()=>askConfirm('永久删除','删除后无法恢复，确定继续？',()=>post('permanentDelete',{id}),true)}
+      {label:'恢复到图库',action:()=>post('restoreFromTrash',{id})},{separator:true},{label:'永久删除',danger:true,action:()=>askConfirm('永久删除','删除后无法恢复，确定继续？',()=>post('permanentDelete',{id}),true)}
     ]:shot.needsReview?[
       {label:'继续编辑',action:()=>{state.selectedScreenshotId=id;setActivePanel('edit',true)}},{label:'完成整理',action:()=>post('finishPending',{id})},{separator:true},{label:'移到回收站',danger:true,action:()=>post('moveToTrash',{id})}
     ]:[
@@ -323,9 +336,16 @@
   }
 
   function openMoveScreenshotsModal(ids) {
-    const options=state.people.map(p=>`<option value="${p.id}" ${p.id===state.selectedPersonId?'selected':''}>${esc(p.displayName)}</option>`).join('');
-    modal(`<h2>移动到其他图库</h2><p>所选截图将从当前成员图库移动到目标成员图库。</p><div class="modal-field"><label>目标成员图库</label><select class="field" id="moveTarget">${options}</select></div><div class="modal-actions"><button class="btn" data-cancel>取消</button><button class="btn primary" data-move>移动</button></div>`,layer=>{
-      layer.querySelector('[data-move]').onclick=()=>{const target=$('moveTarget').value;if(!target||target===state.selectedPersonId)return toast('请选择另一个成员图库。');layer.remove();post('moveScreenshots',{ids,sourceMemberId:state.selectedPersonId,targetMemberId:target});resetSelectionMode();};
+    const available=state.people.filter(p=>p.id!==state.selectedPersonId);
+    const memberButton=(p,depth=0)=>`<button class="library-choice" data-library="${p.id}" style="--depth:${depth}"><span class="avatar a${Math.abs(hash(p.id))%5+1}">${esc(p.displayName.slice(0,1)||'?')}</span><span>${esc(p.displayName)}</span></button>`;
+    const groupBlock=(group,depth=0)=>{const members=available.filter(p=>p.categoryIds.includes(group.id));const children=state.categories.filter(x=>x.parentId===group.id);const body=members.map(p=>memberButton(p,depth)).join('')+children.map(x=>groupBlock(x,depth+1)).join('');return body?`<div class="library-group"><div class="library-group-title" style="--depth:${depth}">${esc(group.name)}</div>${body}</div>`:'';};
+    const grouped=state.categories.filter(x=>!x.parentId).map(x=>groupBlock(x)).join('');
+    const ungrouped=available.filter(p=>!p.categoryIds.length).map(p=>memberButton(p)).join('');
+    const picker=grouped+(ungrouped?`<div class="library-group"><div class="library-group-title">未分组</div>${ungrouped}</div>`:'');
+    modal(`<h2>移动到其他图库</h2><p>所选截图将从当前成员图库移动到目标成员图库。</p><div class="modal-field"><label>目标成员图库</label><div class="library-picker" id="movePicker">${picker||'<div class="picker-empty">没有可用的目标图库</div>'}</div></div><div class="modal-actions"><button class="btn" data-cancel>取消</button><button class="btn primary" data-move disabled>移动</button></div>`,layer=>{
+      let target=null;const move=layer.querySelector('[data-move]');
+      layer.querySelectorAll('[data-library]').forEach(button=>button.onclick=()=>{target=button.dataset.library;layer.querySelectorAll('[data-library]').forEach(x=>x.classList.toggle('active',x===button));move.disabled=false;});
+      move.onclick=()=>{if(!target)return;layer.remove();post('moveScreenshots',{ids,sourceMemberId:state.selectedPersonId,targetMemberId:target});resetSelectionMode();};
     });
   }
 
@@ -369,14 +389,14 @@
       dz.addEventListener('drop',e=>readDroppedFiles([...e.dataTransfer.files].filter(f=>f.type.startsWith('image/'))));return;
     }
     const rows=(draft.messages?.length?draft.messages:[{id:crypto.randomUUID(),text:'',personId:current?.id||null}]).map(m=>({...m,personId:m.personId||current?.id||null}));
-    host.innerHTML=`<div class="panel-header"><h2>添加并校正</h2><span class="muted">OCR ${Math.round((draft.confidence||0)*100)}%</span></div><div class="bigpreview"><img class="real-image" src="${esc(draft.dataUrl)}"/></div><div class="edit-tip">可以在保存前直接修正发言人和消息内容</div><div class="chat-editor compact"><div class="chat-editor-head">识别结果</div><div class="chat-stream" id="draftChatStream">${rows.map((m,i)=>chatRow(m,i)).join('')}</div><button class="chat-add" id="addDraftMessage">＋ 添加一条消息</button></div><div class="section"><div class="section-title">目标图库</div><div class="chips">${current?`<span class="chip">${esc(current.displayName)}</span>`:'<span class="muted">未选择成员图库</span>'}</div></div><div class="section"><div class="section-title">关键词（可选，以逗号分隔）</div><input class="keyword-input" id="draftKeywords" placeholder="例如：加班，名场面"/></div><div class="actions"><button class="btn" id="cancelDraft">取消</button><button class="btn" id="commitPending">暂存</button><button class="btn primary" id="commitCurrent" ${current?'':'disabled'}>加入图库</button></div>`;
+    host.innerHTML=`<div class="panel-header"><h2>添加并校正</h2><span class="muted">OCR ${Math.round((draft.confidence||0)*100)}%</span></div><div class="bigpreview"><img class="real-image" src="${esc(draft.dataUrl)}"/></div><div class="edit-tip">ID 可以留空；多行文字可在同一个文本框内直接校正</div><div class="message-editor compact"><div class="message-editor-head"><span>ID（可不指定）</span><span>消息内容</span></div><div class="message-list" id="draftChatStream">${rows.map(messageRow).join('')}</div><button class="message-add" id="addDraftMessage">＋ 添加一条消息</button></div><div class="section"><div class="section-title">目标图库</div><div class="chips">${current?`<span class="chip">${esc(current.displayName)}</span>`:'<span class="muted">未选择成员图库</span>'}</div></div><div class="section"><div class="section-title">关键词（可选，以逗号分隔）</div><input class="keyword-input" id="draftKeywords" placeholder="例如：加班，名场面"/></div><div class="actions"><button class="btn" id="cancelDraft">取消</button><button class="btn" id="commitPending">暂存</button><button class="btn primary" id="commitCurrent" ${current?'':'disabled'}>加入图库</button></div>`;
     bindMessageEditor(host);
-    $('addDraftMessage').onclick=()=>openNewMessageModal(message=>{$('draftChatStream').insertAdjacentHTML('beforeend',chatRow(message,$('draftChatStream').children.length));bindMessageEditor(host);},current?.id||null);
+    $('addDraftMessage').onclick=()=>{$('draftChatStream').insertAdjacentHTML('beforeend',messageRow({id:crypto.randomUUID(),personId:null,text:''}));bindMessageEditor(host);$('draftChatStream').lastElementChild.querySelector('[data-text]').focus();};
     $('cancelDraft').onclick=()=>{draft=null;post('cancelDraft');renderAdd();};
     $('commitPending').onclick=()=>commitDraft(true,current);$('commitCurrent').onclick=()=>commitDraft(false,current);
   }
 
-  function collectMessageRows(streamId){return [...$(streamId).querySelectorAll('.chat-message')].map((r,i)=>({id:r.dataset.message||crypto.randomUUID(),sortOrder:i,personId:r.querySelector('[data-speaker]').value||null,text:r.querySelector('[data-text]').innerText.trim()})).filter(x=>x.text);}
+  function collectMessageRows(streamId){return [...$(streamId).querySelectorAll('.message-row')].map((r,i)=>({id:r.dataset.message||crypto.randomUUID(),sortOrder:i,personId:r.querySelector('[data-speaker]').value||null,text:r.querySelector('[data-text]').value.trim()})).filter(x=>x.text);}
   function commitDraft(pending,current){post('commitDraft',{pending,personId:current?.id||null,keywords:keywords($('draftKeywords')?.value),messages:collectMessageRows('draftChatStream')});}
   function readDroppedFiles(files){if(!files.length)return;Promise.all(files.map(file=>new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve({name:file.name,dataUrl:r.result});r.onerror=reject;r.readAsDataURL(file);}))).then(items=>items.length===1?post('prepareDroppedImage',items[0]):post('prepareDroppedImages',{items}));}
   function speakerOptions(id){return `<option value="">未指定</option>${state.people.map(p=>`<option value="${p.id}" ${p.id===id?'selected':''}>${esc(p.displayName)}</option>`).join('')}`;}
@@ -384,15 +404,14 @@
   function renderEdit(){
     const host=$('edit'),shot=selectedScreenshot(); if(!shot||shot.deletedAt){emptyPanel(host,'选择一张截图','从成员图库中选择截图后，可直接修改聊天内容。');return;}
     const rows=shot.messages.length?shot.messages:[{id:crypto.randomUUID(),personId:state.selectedPersonId,text:''}];
-    host.innerHTML=`<div class="panel-header"><h2>${state.topView==='pending'?'继续处理截图':'编辑截图'}</h2><span class="muted">${rows.length} 条消息</span></div><div class="edit-tip">每条消息都可以独立选择发言人并直接修改内容</div><div class="chat-editor"><div class="chat-editor-head">识别结果<button class="bubble-tool small-action" id="rerunOcr">重新 OCR</button></div><div class="chat-stream" id="chatStream">${rows.map((m,i)=>chatRow(m,i)).join('')}</div><button class="chat-add" id="addMessage">＋ 添加一条消息</button></div><div class="section"><div class="section-title">关键词（可选）</div><input class="keyword-input" id="editKeywords" value="${esc((shot.keywords||[]).join('，'))}" placeholder="以逗号分隔"/></div><div class="actions"><button class="btn" id="cancelEdit">取消</button><button class="btn primary" id="saveEdit">${state.topView==='pending'?'保存并完成':'保存修改'}</button></div>`;
-    bindEdit();$('addMessage').onclick=()=>openNewMessageModal(message=>{$('chatStream').insertAdjacentHTML('beforeend',chatRow(message,$('chatStream').children.length));editDirty=true;bindEdit();},state.selectedPersonId);
+    host.innerHTML=`<div class="panel-header"><h2>${state.topView==='pending'?'继续处理截图':'编辑截图'}</h2><span class="muted">${rows.length} 条消息</span></div><div class="edit-tip">ID 可以留空；每个文本框对应一条消息并支持多行</div><div class="message-editor"><div class="message-editor-head"><span>ID（可不指定）</span><span>消息内容</span><button class="message-ocr" id="rerunOcr">重新 OCR</button></div><div class="message-list" id="chatStream">${rows.map(messageRow).join('')}</div><button class="message-add" id="addMessage">＋ 添加一条消息</button></div><div class="section"><div class="section-title">关键词（可选）</div><input class="keyword-input" id="editKeywords" value="${esc((shot.keywords||[]).join('，'))}" placeholder="以逗号分隔"/></div><div class="actions"><button class="btn" id="cancelEdit">取消</button><button class="btn primary" id="saveEdit">${state.topView==='pending'?'保存并完成':'保存修改'}</button></div>`;
+    bindEdit();$('addMessage').onclick=()=>{$('chatStream').insertAdjacentHTML('beforeend',messageRow({id:crypto.randomUUID(),personId:null,text:''}));editDirty=true;bindEdit();$('chatStream').lastElementChild.querySelector('[data-text]').focus();};
     $('cancelEdit').onclick=()=>{editDirty=false;setActivePanel('preview',true);};$('saveEdit').onclick=saveEdit;
     $('rerunOcr').onclick=()=>askConfirm('重新识别','重新 OCR 会覆盖当前编辑内容，确定继续？',()=>post('rerunOcr',{id:shot.id}));
   }
-  function chatRow(m,i){const memberIndex=state.people.findIndex(x=>x.id===m.personId),mine=memberIndex>=0&&memberIndex%2===1,p=memberById(m.personId);return `<div class="chat-message ${mine?'mine':''}" data-message="${esc(m.id||'')}"><div class="chat-avatar ${mine?'a2':'a1'}">${esc(p?.displayName?.slice(0,1)||'?')}</div><div class="chat-body"><select class="chat-speaker" data-speaker>${speakerOptions(m.personId)}</select><br/><div class="chat-bubble" contenteditable="true" data-text>${esc(m.text)}</div><div class="bubble-tools"><button class="bubble-tool" data-remove>删除</button></div></div></div>`;}
-  function bindMessageEditor(host){host.querySelectorAll('[data-remove]').forEach(n=>n.onclick=()=>n.closest('.chat-message').remove());}
-  function bindEdit(){const h=$('edit');h.querySelectorAll('[contenteditable],select,input').forEach(n=>n.oninput=()=>editDirty=true);h.querySelectorAll('[data-remove]').forEach(n=>n.onclick=()=>{n.closest('.chat-message').remove();editDirty=true;});}
-  function openNewMessageModal(onAdd,defaultPersonId=null){const options=speakerOptions(defaultPersonId);modal(`<h2>添加一条消息</h2><p>先选择这条消息的发言人，再填写消息内容。</p><div class="modal-field"><label>发言人</label><select class="field" id="newMessageSpeaker">${options}</select></div><div class="modal-field"><label>消息内容</label><textarea class="field textarea" id="newMessageText" autofocus></textarea></div><div class="modal-actions"><button class="btn" data-cancel>取消</button><button class="btn primary" data-add>添加</button></div>`,layer=>{layer.querySelector('[data-add]').onclick=()=>{const text=$('newMessageText').value.trim();if(!text)return $('newMessageText').focus();const personId=$('newMessageSpeaker').value||null;layer.remove();onAdd({id:crypto.randomUUID(),personId,text});};});}
+  function messageRow(m){return `<div class="message-row" data-message="${esc(m.id||'')}"><select class="message-speaker" data-speaker aria-label="消息 ID">${speakerOptions(m.personId)}</select><textarea class="message-text" data-text rows="2" aria-label="消息内容" placeholder="输入消息内容">${esc(m.text)}</textarea><button class="message-remove" data-remove title="删除这条消息" aria-label="删除这条消息">×</button></div>`;}
+  function bindMessageEditor(host){host.querySelectorAll('[data-remove]').forEach(n=>n.onclick=()=>n.closest('.message-row').remove());}
+  function bindEdit(){const h=$('edit');h.querySelectorAll('textarea,select,input').forEach(n=>n.oninput=()=>editDirty=true);h.querySelectorAll('[data-remove]').forEach(n=>n.onclick=()=>{n.closest('.message-row').remove();editDirty=true;});}
   function saveEdit(){const shot=selectedScreenshot(),messages=collectMessageRows('chatStream');post('saveEdit',{id:shot.id,messages,personIds:[...new Set(messages.map(x=>x.personId).filter(Boolean))],keywords:keywords($('editKeywords').value)});editDirty=false;}
 
   function renderSettings(){
@@ -413,6 +432,8 @@
     document.querySelectorAll('[data-top]').forEach(tab=>tab.onclick=()=>{resetSelectionMode();state.topView=tab.dataset.top;state.selectedScreenshotId=null;post('topViewChanged',{name:state.topView});renderApp();if(state.topView==='library')setActivePanel('preview',true);});
     $('trashNav').onclick=()=>{resetSelectionMode();state.topView='trash';state.selectedScreenshotId=null;post('topViewChanged',{name:'trash'});renderApp();setActivePanel('preview',true);};
     $('pendingNav').onclick=()=>{resetSelectionMode();state.topView='pending';state.selectedScreenshotId=null;post('topViewChanged',{name:'pending'});renderApp();setActivePanel('preview',true);};
+    bindScreenshotDropTarget($('pendingNav'),'pending');
+    bindScreenshotDropTarget($('trashNav'),'trash');
     $('sideSearch').oninput=()=>{updateSearchClear('side');renderTree();};
     $('centerSearch').oninput=()=>{resetSelectionMode();updateSearchClear('center');renderCenter();};
     $('sideSearchClear').onclick=()=>{$('sideSearch').value='';updateSearchClear('side');renderTree();$('sideSearch').focus();};
