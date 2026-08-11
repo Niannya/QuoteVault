@@ -130,6 +130,7 @@ public sealed class MainForm : Form
                 case "topViewChanged":
                     if (payload.TryGetProperty("name", out var topView)) _topView = topView.GetString() ?? "library";
                     _selectedScreenshotId = null;
+                    if (_topView is "pending" or "trash") _selectedPersonId = null;
                     break;
                 case "selectPerson":
                     _selectedPersonId = ReadGuid(payload, "id");
@@ -139,7 +140,15 @@ public sealed class MainForm : Form
                     break;
                 case "selectScreenshot":
                     _selectedScreenshotId = ReadGuid(payload, "id");
-                    await SendStateAsync(_activePanel == "pending" ? "pending" : "preview");
+                    await SendStateAsync("preview");
+                    break;
+                case "selectGlobalScreenshot":
+                    SelectGlobalScreenshot(ReadGuid(payload, "id"));
+                    await SendStateAsync("preview");
+                    break;
+                case "clearScreenshotSelection":
+                    _selectedScreenshotId = null;
+                    await SendStateAsync("preview");
                     break;
                 case "managePeople":
                     await SendStateAsync();
@@ -171,6 +180,14 @@ public sealed class MainForm : Form
                 case "deleteMember":
                     DeleteMember(ReadGuid(payload, "id"));
                     await SendStateAsync();
+                    break;
+                case "moveMember":
+                    MoveMember(payload);
+                    await SendStateAsync();
+                    break;
+                case "moveScreenshots":
+                    MoveScreenshots(payload);
+                    await SendStateAsync("preview");
                     break;
                 case "saveSettings":
                     SaveSettings(payload);
@@ -204,7 +221,7 @@ public sealed class MainForm : Form
                     break;
                 case "commitDraft":
                     await CommitDraftAsync(payload.GetProperty("pending").GetBoolean(), ReadGuid(payload, "personId"),
-                        ReadStringList(payload, "keywords"));
+                        ReadStringList(payload, "keywords"), ReadMessages(payload));
                     break;
                 case "resolveDuplicate":
                     await ResolveDuplicateAsync(payload.GetProperty("action").GetString());
@@ -217,7 +234,7 @@ public sealed class MainForm : Form
                     break;
                 case "moveToTrash":
                     MoveToTrash(ReadGuid(payload, "id"));
-                    await SendStateAsync(_activePanel == "pending" ? "pending" : "preview");
+                    await SendStateAsync("preview");
                     break;
                 case "restoreFromTrash":
                     RestoreFromTrash(ReadGuid(payload, "id"));
@@ -236,7 +253,7 @@ public sealed class MainForm : Form
                     break;
                 case "finishPending":
                     FinishPending(ReadGuid(payload, "id"));
-                    await SendStateAsync("pending");
+                    await SendStateAsync("preview");
                     break;
                 case "windowAction":
                     HandleWindowAction(payload.GetProperty("action").GetString());
@@ -275,6 +292,7 @@ public sealed class MainForm : Form
                 deletedAt = x.DeletedAt,
                 needsReview = x.NeedsReview,
                 confidence = x.OcrConfidence,
+                detectedNicknames = x.DetectedNicknames,
                 personIds = x.PersonIds,
                 messages = x.Messages.OrderBy(m => m.SortOrder).Select(m => new
                 {
@@ -436,14 +454,16 @@ public sealed class MainForm : Form
         }
     }
 
-    private async Task CommitDraftAsync(bool pending, Guid? personId, IReadOnlyList<string> keywords, bool bypassDuplicateCheck = false)
+    private async Task CommitDraftAsync(bool pending, Guid? personId, IReadOnlyList<string> keywords,
+        IReadOnlyList<MessageItem> editedMessages, bool bypassDuplicateCheck = false)
     {
         if (_draft is null) return;
         var hash = AppStore.ComputeSha256(_draft.Bytes);
         var duplicate = _store.FindDuplicate(hash);
         if (duplicate is not null && !bypassDuplicateCheck)
         {
-            _pendingDuplicateCommit = new PendingDuplicateCommit(pending, personId, keywords.ToList(), duplicate.Id);
+            _pendingDuplicateCommit = new PendingDuplicateCommit(pending, personId, keywords.ToList(),
+                editedMessages.Select(CloneMessage).ToList(), duplicate.Id);
             await InvokeWebAsync("showDuplicate", new { duplicate.OriginalFileName });
             return;
         }
@@ -452,10 +472,15 @@ public sealed class MainForm : Form
         item.OcrRawText = _draft.Ocr.RawText;
         item.OcrConfidence = _draft.Ocr.Confidence;
         item.DetectedNicknames = _draft.Ocr.NicknameCandidates.ToList();
-        item.Messages = _draft.Ocr.Lines.Select((line, index) => new MessageItem { SortOrder = index, Text = line }).ToList();
+        item.Messages = editedMessages.Count > 0
+            ? editedMessages.Select(CloneMessage).Where(x => !string.IsNullOrWhiteSpace(x.Text)).ToList()
+            : _draft.Ocr.Lines.Select((line, index) => new MessageItem { SortOrder = index, Text = line }).ToList();
         item.NeedsReview = pending;
         item.Keywords = NormalizeKeywords(keywords);
         if (personId is Guid id && _store.State.People.Any(x => x.Id == id)) item.PersonIds.Add(id);
+        foreach (var speakerId in item.Messages.Select(x => x.PersonId).OfType<Guid>()
+                     .Where(id => _store.State.People.Any(person => person.Id == id)))
+            if (!item.PersonIds.Contains(speakerId)) item.PersonIds.Add(speakerId);
         _store.Save();
 
         _selectedScreenshotId = item.Id;
@@ -472,7 +497,7 @@ public sealed class MainForm : Form
         if (pending is null) return;
         if (action == "import")
         {
-            await CommitDraftAsync(pending.Pending, pending.PersonId, pending.Keywords, true);
+            await CommitDraftAsync(pending.Pending, pending.PersonId, pending.Keywords, pending.Messages, true);
             return;
         }
         if (action == "view")
@@ -511,6 +536,8 @@ public sealed class MainForm : Form
             .Select(x => Guid.TryParse(x.GetString(), out var parsed) ? parsed : Guid.Empty)
             .Where(x => x != Guid.Empty && _store.State.People.Any(p => p.Id == x)).Distinct().ToList();
         if (_selectedPersonId is Guid current && !item.PersonIds.Contains(current)) item.PersonIds.Add(current);
+        if (_topView == "pending" && item.PersonIds.Count == 0)
+            throw new InvalidOperationException("完成待处理截图前，请至少为一条消息选择发言人。");
         item.Keywords = NormalizeKeywords(ReadStringList(payload, "keywords"));
         item.NeedsReview = false;
         _store.Save();
@@ -525,7 +552,6 @@ public sealed class MainForm : Form
         item.OcrConfidence = output.Confidence;
         item.DetectedNicknames = output.NicknameCandidates.ToList();
         item.Messages = output.Lines.Select((line, index) => new MessageItem { SortOrder = index, Text = line }).ToList();
-        item.NeedsReview = true;
         _store.Save();
         await SendStateAsync("edit");
     }
@@ -568,6 +594,7 @@ public sealed class MainForm : Form
     {
         var item = _store.State.Screenshots.FirstOrDefault(x => x.Id == id) ?? throw new FileNotFoundException("截图不存在。");
         _store.RestoreFromTrash(item);
+        _selectedScreenshotId = null;
     }
 
     private void PermanentlyDelete(Guid? id)
@@ -644,6 +671,46 @@ public sealed class MainForm : Form
         _store.State.People.Remove(member);
         if (_selectedPersonId == member.Id) _selectedPersonId = null;
         _store.Save();
+    }
+
+    private void MoveMember(JsonElement payload)
+    {
+        var memberId = ReadGuid(payload, "memberId") ?? throw new InvalidDataException("没有选择成员。");
+        var targetGroupId = ReadGuid(payload, "targetGroupId") ?? throw new InvalidDataException("没有选择目标群组。");
+        var sourceGroupId = ReadGuid(payload, "sourceGroupId");
+        var member = _store.State.People.FirstOrDefault(x => x.Id == memberId) ??
+                     throw new InvalidDataException("成员不存在。");
+        if (!_store.State.Categories.Any(x => x.Id == targetGroupId)) throw new InvalidDataException("目标群组不存在。");
+        if (sourceGroupId.HasValue && sourceGroupId != targetGroupId) member.CategoryIds.Remove(sourceGroupId.Value);
+        if (!member.CategoryIds.Contains(targetGroupId)) member.CategoryIds.Add(targetGroupId);
+        _store.Save();
+    }
+
+    private void MoveScreenshots(JsonElement payload)
+    {
+        var targetMemberId = ReadGuid(payload, "targetMemberId") ?? throw new InvalidDataException("没有选择目标图库。");
+        var sourceMemberId = ReadGuid(payload, "sourceMemberId");
+        if (!_store.State.People.Any(x => x.Id == targetMemberId)) throw new InvalidDataException("目标成员不存在。");
+        var ids = ReadStringList(payload, "ids").Select(x => Guid.TryParse(x, out var id) ? id : Guid.Empty)
+            .Where(x => x != Guid.Empty).ToHashSet();
+        foreach (var item in _store.State.Screenshots.Where(x => ids.Contains(x.Id) && !x.DeletedAt.HasValue))
+        {
+            if (sourceMemberId.HasValue && sourceMemberId != targetMemberId) item.PersonIds.Remove(sourceMemberId.Value);
+            if (!item.PersonIds.Contains(targetMemberId)) item.PersonIds.Add(targetMemberId);
+        }
+        _selectedPersonId = targetMemberId;
+        _selectedScreenshotId = ids.Count == 1 ? ids.First() : null;
+        _topView = "library";
+        _store.Save();
+    }
+
+    private void SelectGlobalScreenshot(Guid? id)
+    {
+        var item = _store.State.Screenshots.FirstOrDefault(x => x.Id == id && !x.DeletedAt.HasValue) ??
+                   throw new FileNotFoundException("截图不存在。");
+        _selectedScreenshotId = item.Id;
+        _selectedPersonId = item.PersonIds.FirstOrDefault() is var personId && personId != Guid.Empty ? personId : null;
+        _topView = item.NeedsReview ? "pending" : "library";
     }
 
     private List<Guid> ReadValidGroupIds(JsonElement payload) =>
@@ -810,6 +877,27 @@ public sealed class MainForm : Form
             .Select(x => x.GetString() ?? string.Empty).ToList();
     }
 
+    private static List<MessageItem> ReadMessages(JsonElement payload)
+    {
+        if (payload.ValueKind == JsonValueKind.Undefined || !payload.TryGetProperty("messages", out var value) ||
+            value.ValueKind != JsonValueKind.Array) return [];
+        return value.EnumerateArray().Select((element, index) => new MessageItem
+        {
+            Id = ReadGuid(element, "id") ?? Guid.NewGuid(),
+            SortOrder = index,
+            PersonId = ReadGuid(element, "personId"),
+            Text = element.TryGetProperty("text", out var text) ? text.GetString()?.Trim() ?? string.Empty : string.Empty
+        }).Where(x => !string.IsNullOrWhiteSpace(x.Text)).ToList();
+    }
+
+    private static MessageItem CloneMessage(MessageItem source) => new()
+    {
+        Id = source.Id,
+        SortOrder = source.SortOrder,
+        PersonId = source.PersonId,
+        Text = source.Text
+    };
+
     private static List<string> NormalizeKeywords(IEnumerable<string> values) => values
         .SelectMany(x => x.Split([',', '，', ';', '；'], StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
         .Where(x => x.Length <= 40).Distinct(StringComparer.OrdinalIgnoreCase).Take(30).ToList();
@@ -842,5 +930,6 @@ public sealed class MainForm : Form
 
     private sealed record ImportDraft(byte[] Bytes, string Name, string Extension, OcrOutput Ocr);
     private sealed record IncomingImage(byte[] Bytes, string Name, string Extension);
-    private sealed record PendingDuplicateCommit(bool Pending, Guid? PersonId, List<string> Keywords, Guid DuplicateId);
+    private sealed record PendingDuplicateCommit(bool Pending, Guid? PersonId, List<string> Keywords,
+        List<MessageItem> Messages, Guid DuplicateId);
 }
