@@ -1,0 +1,10 @@
+bin/
+obj/
+.vs/
+*.user
+ui-preview.png
+*.zip
+artifacts/
+output/
+legacy/
+参考图/
