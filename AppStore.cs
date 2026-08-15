@@ -194,9 +194,15 @@ public sealed class AppStore
             screenshot.Keywords ??= [];
             foreach (var message in screenshot.Messages) message.Text ??= string.Empty;
         }
-        state.Settings.OcrEngine = string.IsNullOrWhiteSpace(state.Settings.OcrEngine)
-            ? "PaddleOcrV6"
-            : state.Settings.OcrEngine;
+        if (!state.Settings.HasExplicitOcrChoice)
+        {
+            state.Settings.OcrEngine = "None";
+            state.Settings.HasExplicitOcrChoice = true;
+        }
+        else if (string.IsNullOrWhiteSpace(state.Settings.OcrEngine))
+        {
+            state.Settings.OcrEngine = "None";
+        }
     }
 
     private static string ValidateStoredFileName(string? fileName)

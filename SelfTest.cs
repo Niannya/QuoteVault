@@ -68,6 +68,7 @@ internal static class SelfTest
         try
         {
             var store = new AppStore(root);
+            Assert(store.State.Settings.OcrEngine == "None", "新图库默认不启用 OCR");
             var category = new CategoryItem { Name = "大学" };
             var person = new PersonItem { DisplayName = "小明", CategoryIds = [category.Id] };
             store.State.Categories.Add(category);

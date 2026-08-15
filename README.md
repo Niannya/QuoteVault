@@ -1,41 +1,37 @@
 # QuoteVault
 
-QuoteVault 是一款 Windows 本地聊天截图管理工具。它可以从剪贴板、拖放或文件选择器收录截图，使用离线 OCR 提取聊天内容，并按成员和用户自建的多级群组整理、检索与复制原图。
+QuoteVault 是一款 Windows 本地聊天截图管理工具。它可以从剪贴板、拖放或文件选择器收录截图，按成员和用户自建的多级群组整理，并通过消息内容或自定义关键词检索、复制原图。
 
 ## 当前功能
 
-### 截图收录与识别
+### 截图收录与编辑
 
-- 从剪贴板、文件选择器或拖放操作收录 PNG、JPEG、BMP、GIF 图片。
-- 通过可配置的全局快捷键快速收录，默认快捷键为 `Ctrl+Alt+F8`。
-- 默认使用实验性的 PaddleOCR v6 medium 在本机识别简体中文和英文，并保留 Tesseract 兼容模式。
-- 根据文字坐标与气泡背景合并同一条消息中的多行文本，并分离带时间的昵称行。
-- 收录时可以直接校正识别结果、设置每条消息的发言人、编辑多行消息并添加自定义关键词。
+- 支持 PNG、JPEG、BMP、GIF 图片，以及剪贴板、文件选择和拖放收录。
+- 支持可配置的全局收录快捷键，默认是 `Ctrl+Alt+F8`。
+- 添加截图时可直接校正消息内容、为每条消息指定或留空 ID，并设置关键词。
+- 已收录截图可随时重新编辑或重新 OCR。
 
 ### 图库组织
 
 - 以成员图库管理截图，一张截图可以关联多个成员。
-- 使用用户自建的多级群组整理成员，成员也可以暂时保留在“未分组”中。
-- 提供待处理区暂存尚未整理的截图，并通过回收站完成还原或永久删除。
+- 使用用户自建的多级群组整理成员，成员也可保留在“未分组”中。
+- 提供待处理区和回收站，并支持恢复或永久删除。
 - 支持拖动成员调整群组，以及在成员图库、待处理区和回收站之间拖动截图。
 
-### 浏览与批量管理
+### 浏览、检索与批量操作
 
-- 默认采用深色界面，并针对窗口化与全屏布局进行适配。
-- 卡片视图适合同时浏览更多截图，列表视图用于查看更完整的消息摘要。
+- 深色界面，支持卡片视图和信息更完整的列表视图。
 - 支持鼠标框选、多选、批量移动和批量回收。
-- 右侧面板提供原图预览、截图添加和消息编辑。
+- 支持全局搜索群组、成员、消息内容和关键词，也支持图库内搜索。
+- 可将选中的整张原图复制到剪贴板。
 
-### 检索与复用
+### OCR
 
-- 全局搜索群组、成员、消息内容和自定义关键词。
-- 在当前成员图库、待处理区或回收站内进行范围检索。
-- 将选中的整张原图复制到剪贴板，便于重新发送。
-
-### 本地数据
-
-- 图片、成员、群组、消息和关键词索引全部保存在本机。
-- 支持将完整图库导出为 ZIP 备份，并从备份恢复数据。
+- **默认不使用 OCR**，导入后可直接手动填写消息。
+- 设置页可选择 Tesseract 5 轻量兼容模式。
+- PaddleOCR v6 medium 作为可选的高质量中文识别方案；选择时由用户确认是否安装，不随主程序打包。
+- PaddleOCR 模式会结合文字坐标与相邻区域背景合并同一条消息中的多行文本。
+- 所有识别结果都允许手动修正，识别结果不会自动创建成员。
 
 ## 运行
 
@@ -47,11 +43,7 @@ cd QuoteVault
 dotnet run
 ```
 
-或直接运行发布产物：
-
-```text
-bin\Release\net9.0-windows\win-x64\publish\QuoteVault.exe
-```
+也可以直接运行发布目录中的 `QuoteVault.exe`。
 
 ## 构建与验证
 
@@ -71,37 +63,39 @@ dotnet publish -c Release -r win-x64 --self-contained false
 └── backups\
 ```
 
-图片和索引只保存在本机，不会上传到云端。备份功能会将 `data.json` 与 `images` 一并打包；恢复前的安全备份保存在 `backups` 中。
+图片和索引只保存在本机，不会上传到云端。完整备份包含 `data.json` 和 `images`。
 
-## OCR 说明
+## 可选安装 PaddleOCR
 
-测试版默认使用 PaddleOCR v6 medium。首次使用前运行：
+在设置页选择 PaddleOCR 后，应用会先说明预计占用空间，并在用户确认后安装：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\paddleocr\setup-runtime.ps1
+```text
+运行环境：%LocalAppData%\QuoteVault\paddle-runtime
+识别模型：%LocalAppData%\QuoteVault\paddle-models
+合计占用：约 900 MB
 ```
 
-运行环境会安装到 `%LocalAppData%\QuoteVault\paddle-runtime`，模型会在首次识别时下载到 `%LocalAppData%\QuoteVault\paddle-models`。下载完成后识别过程完全在本机执行。设置页可以切换回 Tesseract 5 兼容模式。
+也可以在源码目录中手动安装：
 
-当前实验运行环境与模型合计约占用 900 MB，尚未针对正式发布包压缩；后续会再评估原生推理或更轻量的运行时。
+```powershell
+powershell -ExecutionPolicy Bypass -File .\paddleocr\setup-runtime.ps1 -DownloadModels
+```
 
-可以直接比较两个引擎的输出：
+安装和模型下载完成后，识别过程完全在本机执行。复杂背景、特殊字体和很小的字号仍可能导致误识别，因此添加和编辑流程始终允许人工修正。
+
+可使用以下命令单独比较识别输出：
 
 ```powershell
 dotnet run -c Release -- --ocr-test "截图.png"
 dotnet run -c Release -- --paddle-ocr-test "截图.png"
 ```
 
-聊天截图中的复杂背景、表情、特殊字体和很小的字号仍可能导致误识别，因此新增和编辑流程始终允许人工修正。
-
-PaddleOCR 模式会结合文字坐标、相邻区域背景和常见昵称特征推断消息块；Tesseract 兼容模式仍使用文本行规则。识别结果不会在未经用户操作时自动创建成员。
-
 ## 项目结构
 
 - `MainForm.cs`：主窗口、导入、搜索、剪贴板、群组/成员操作和全局快捷键。
-- `ui/`：主界面、原位弹层、设置页、批量操作和响应式布局。
+- `ui/`：主界面、设置页、批量操作和响应式布局。
 - `AppStore.cs`：JSON 索引、图片管理、回收站和备份恢复。
-- `OcrService.cs`：离线 OCR 与群昵称候选提取。
-- `PaddleOcrService.cs`、`paddleocr/`：PaddleOCR v6 实验工作进程、消息分组与运行环境安装。
+- `OcrService.cs`：Tesseract 离线 OCR。
+- `PaddleOcrService.cs`、`paddleocr/`：可选 PaddleOCR 工作进程、消息分组和安装脚本。
 - `Models.cs`：数据模型。
 - `SelfTest.cs`：无需 UI 的基础自检。

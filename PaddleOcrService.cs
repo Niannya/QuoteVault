@@ -13,7 +13,12 @@ public sealed class PaddleOcrService : IDisposable
 
     public string PythonPath { get; }
     public string WorkerPath { get; } = Path.Combine(AppContext.BaseDirectory, "paddleocr", "paddle_worker.py");
+    public string ModelsPath { get; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "QuoteVault", "paddle-models");
     public bool IsAvailable => File.Exists(PythonPath) && File.Exists(WorkerPath);
+    public bool IsFullyInstalled => IsAvailable &&
+                                    File.Exists(Path.Combine(ModelsPath, "official_models", "PP-OCRv6_medium_det", "inference.pdiparams")) &&
+                                    File.Exists(Path.Combine(ModelsPath, "official_models", "PP-OCRv6_medium_rec", "inference.pdiparams"));
 
     public PaddleOcrService()
     {
@@ -85,8 +90,7 @@ public sealed class PaddleOcrService : IDisposable
             StandardErrorEncoding = Encoding.UTF8
         };
         startInfo.Environment["PYTHONUTF8"] = "1";
-        startInfo.Environment["PADDLE_PDX_CACHE_HOME"] = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "QuoteVault", "paddle-models");
+        startInfo.Environment["PADDLE_PDX_CACHE_HOME"] = ModelsPath;
         startInfo.Environment["PADDLE_PDX_MODEL_SOURCE"] = "BOS";
         _worker = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 PaddleOCR 工作进程。");
         _worker.ErrorDataReceived += (_, args) =>

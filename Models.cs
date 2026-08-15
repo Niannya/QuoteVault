@@ -69,7 +69,8 @@ public sealed class AppSettings
     public bool HotKeyAlt { get; set; } = true;
     public bool HotKeyShift { get; set; }
     public Keys HotKey { get; set; } = Keys.F8;
-    public string OcrEngine { get; set; } = "PaddleOcrV6";
+    public string OcrEngine { get; set; } = "None";
+    public bool HasExplicitOcrChoice { get; set; }
 }
 
 public sealed record OcrOutput(string RawText, float Confidence, IReadOnlyList<string> Lines,

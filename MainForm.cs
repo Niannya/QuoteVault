@@ -200,6 +200,9 @@ public sealed class MainForm : Form
                     SaveSettings(payload);
                     await SendStateAsync();
                     break;
+                case "installPaddleOcr":
+                    await InstallPaddleOcrAsync(payload);
+                    break;
                 case "createBackup":
                     CreateBackup();
                     break;
@@ -325,7 +328,7 @@ public sealed class MainForm : Form
                 hotKeyShift = _store.State.Settings.HotKeyShift,
                 hotKey = _store.State.Settings.HotKey.ToString(),
                 ocrEngine = _store.State.Settings.OcrEngine,
-                paddleAvailable = _paddleOcr.IsAvailable
+                paddleAvailable = _paddleOcr.IsFullyInstalled
             }
         };
         await InvokeWebAsync("setState", state);
@@ -343,9 +346,13 @@ public sealed class MainForm : Form
 
     private Task<OcrOutput> RecognizeAsync(string imagePath, CancellationToken cancellationToken = default)
     {
-        if (_store.State.Settings.OcrEngine == "PaddleOcrV6" && _paddleOcr.IsAvailable)
-            return _paddleOcr.RecognizeAsync(imagePath, cancellationToken);
-        return _tesseractOcr.RecognizeAsync(imagePath, cancellationToken);
+        return _store.State.Settings.OcrEngine switch
+        {
+            "PaddleOcrV6" when _paddleOcr.IsFullyInstalled => _paddleOcr.RecognizeAsync(imagePath, cancellationToken),
+            "PaddleOcrV6" => throw new InvalidOperationException("PaddleOCR 尚未安装，请先在设置中完成安装。"),
+            "Tesseract" => _tesseractOcr.RecognizeAsync(imagePath, cancellationToken),
+            _ => Task.FromResult(new OcrOutput(string.Empty, 0, [string.Empty], [], "未使用 OCR"))
+        };
     }
 
     private async Task ChooseImageForDraftAsync()
@@ -455,7 +462,7 @@ public sealed class MainForm : Form
         var temp = Path.Combine(Path.GetTempPath(), $"QuoteVault-{Guid.NewGuid():N}{extension}");
         try
         {
-            await SetWebBusyAsync(true, "正在识别截图…");
+            await SetWebBusyAsync(true, _store.State.Settings.OcrEngine == "None" ? "正在读取截图…" : "正在识别截图…");
             await File.WriteAllBytesAsync(temp, bytes);
             var output = await RecognizeAsync(temp);
             _draft = new ImportDraft(bytes, name, extension, output);
@@ -567,6 +574,8 @@ public sealed class MainForm : Form
 
     private async Task RerunOcrAsync(Guid? id)
     {
+        if (_store.State.Settings.OcrEngine == "None")
+            throw new InvalidOperationException("当前未启用 OCR，请先在设置中选择识别引擎。");
         var item = _store.State.Screenshots.FirstOrDefault(x => x.Id == id) ?? throw new FileNotFoundException("截图不存在。");
         await SetWebBusyAsync(true, "正在重新识别…");
         var output = await RecognizeAsync(_store.GetImageFile(item));
@@ -756,10 +765,52 @@ public sealed class MainForm : Form
             HotKeyShift = payload.GetProperty("hotKeyShift").GetBoolean(),
             HotKey = key,
             OcrEngine = payload.TryGetProperty("ocrEngine", out var engine) &&
-                        engine.GetString() is "Tesseract" ? "Tesseract" : "PaddleOcrV6"
+                        engine.GetString() is "PaddleOcrV6" or "Tesseract"
+                ? engine.GetString()!
+                : "None",
+            HasExplicitOcrChoice = true
         };
         _store.Save();
         RegisterConfiguredHotKey();
+    }
+
+    private async Task InstallPaddleOcrAsync(JsonElement payload)
+    {
+        await SetWebBusyAsync(true, "正在安装 PaddleOCR 运行环境与模型，这可能需要几分钟…");
+        var scriptPath = Path.Combine(AppContext.BaseDirectory, "paddleocr", "setup-runtime.ps1");
+        if (!File.Exists(scriptPath)) throw new FileNotFoundException("找不到 PaddleOCR 安装脚本。", scriptPath);
+
+        var startInfo = new ProcessStartInfo("powershell.exe")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = System.Text.Encoding.UTF8,
+            StandardErrorEncoding = System.Text.Encoding.UTF8
+        };
+        startInfo.ArgumentList.Add("-NoProfile");
+        startInfo.ArgumentList.Add("-ExecutionPolicy");
+        startInfo.ArgumentList.Add("Bypass");
+        startInfo.ArgumentList.Add("-File");
+        startInfo.ArgumentList.Add(scriptPath);
+        startInfo.ArgumentList.Add("-DownloadModels");
+
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 PaddleOCR 安装程序。");
+        var outputTask = process.StandardOutput.ReadToEndAsync();
+        var errorTask = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        var output = await outputTask;
+        var error = await errorTask;
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException("PaddleOCR 安装失败。\n" +
+                                                (string.IsNullOrWhiteSpace(error) ? output : error).Trim());
+        if (!_paddleOcr.IsFullyInstalled)
+            throw new InvalidOperationException("安装程序已结束，但 PaddleOCR 运行环境或模型不完整。");
+
+        SaveSettings(payload);
+        await SendStateAsync();
+        await ShowWebErrorAsync("PaddleOCR 已安装并启用。");
     }
 
     private void CreateBackup()

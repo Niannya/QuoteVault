@@ -176,6 +176,9 @@ def main():
         use_textline_orientation=False,
         device=os.environ.get("QUOTEVault_PaddleDevice", "cpu"),
     )
+    if "--install-models" in sys.argv:
+        print("PaddleOCR models are ready.", flush=True)
+        return
     for request_line in sys.stdin:
         request_line = request_line.strip().lstrip("\ufeff")
         if not request_line:
