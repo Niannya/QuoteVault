@@ -5,12 +5,15 @@ internal static class SelfTest
     public static int RunLayout()
     {
         var root = Path.Combine(Path.GetTempPath(), "QuoteVaultLayout-" + Guid.NewGuid().ToString("N"));
-        using var form = new MainForm(new AppStore(root));
-        form.Show();
-        Application.DoEvents();
-        Dump(form, 0);
-        form.Close();
-        if (Directory.Exists(root)) Directory.Delete(root, true);
+        using (var form = new MainForm(new AppStore(root)))
+        {
+            form.Show();
+            Application.DoEvents();
+            Dump(form, 0);
+            form.Close();
+            Application.DoEvents();
+        }
+        DeleteDirectoryWithRetry(root);
         return 0;
     }
 
@@ -29,6 +32,26 @@ internal static class SelfTest
             var result = new OcrService().RecognizeAsync(imagePath).GetAwaiter().GetResult();
             Console.WriteLine($"CONFIDENCE={result.Confidence:P0}");
             Console.WriteLine(result.RawText);
+            return string.IsNullOrWhiteSpace(result.RawText) ? 1 : 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex);
+            return 1;
+        }
+    }
+
+    public static int RunPaddleOcr(string imagePath)
+    {
+        try
+        {
+            using var service = new PaddleOcrService();
+            var result = service.RecognizeAsync(imagePath).GetAwaiter().GetResult();
+            Console.WriteLine($"ENGINE={result.Engine}");
+            Console.WriteLine($"CONFIDENCE={result.Confidence:P0}");
+            Console.WriteLine($"NICKNAMES={string.Join(" | ", result.NicknameCandidates)}");
+            Console.WriteLine("MESSAGES:");
+            foreach (var message in result.Lines) Console.WriteLine($"---\n{message}");
             return string.IsNullOrWhiteSpace(result.RawText) ? 1 : 0;
         }
         catch (Exception ex)
@@ -96,8 +119,8 @@ internal static class SelfTest
         }
         finally
         {
-            if (Directory.Exists(root)) Directory.Delete(root, true);
-            if (Directory.Exists(backupRoot)) Directory.Delete(backupRoot, true);
+            DeleteDirectoryWithRetry(root);
+            DeleteDirectoryWithRetry(backupRoot);
         }
     }
 
@@ -117,5 +140,24 @@ internal static class SelfTest
             return;
         }
         throw new InvalidOperationException("断言失败：" + name);
+    }
+
+    private static void DeleteDirectoryWithRetry(string path)
+    {
+        for (var attempt = 0; attempt < 8 && Directory.Exists(path); attempt++)
+        {
+            try
+            {
+                Directory.Delete(path, true);
+            }
+            catch (IOException) when (attempt < 7)
+            {
+                Thread.Sleep(150);
+            }
+            catch (UnauthorizedAccessException) when (attempt < 7)
+            {
+                Thread.Sleep(150);
+            }
+        }
     }
 }

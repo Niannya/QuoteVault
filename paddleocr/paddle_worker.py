@@ -1,0 +1,200 @@
+import json
+import math
+import os
+import re
+import sys
+import traceback
+from collections import Counter
+from pathlib import Path
+
+
+RESULT_PREFIX = "QUOTEVault_RESULT:"
+
+
+def _json_default(value):
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    return str(value)
+
+
+def _color_distance(left, right):
+    return math.sqrt(sum((int(a) - int(b)) ** 2 for a, b in zip(left, right)))
+
+
+def _dominant_color(image, box):
+    from PIL import Image
+
+    x1, y1, x2, y2 = [int(value) for value in box]
+    x1 = max(0, min(image.width - 1, x1))
+    y1 = max(0, min(image.height - 1, y1))
+    x2 = max(x1 + 1, min(image.width, x2))
+    y2 = max(y1 + 1, min(image.height, y2))
+    crop = image.crop((x1, y1, x2, y2)).convert("RGB")
+    crop.thumbnail((160, 40), Image.Resampling.BILINEAR)
+    quantized = crop.quantize(colors=8)
+    count, color_index = max(quantized.getcolors() or [(1, 0)])
+    palette = quantized.getpalette()
+    offset = color_index * 3
+    return tuple(palette[offset : offset + 3])
+
+
+def _line_background(image, box):
+    x1, y1, x2, y2 = [int(value) for value in box]
+    x1 = max(0, min(image.width - 1, x1))
+    x2 = max(x1 + 1, min(image.width, x2))
+    regions = [
+        (x1, max(0, y1 - 3), x2, min(image.height, y1 + 2)),
+        (x1, max(0, y2 - 2), x2, min(image.height, y2 + 3)),
+    ]
+    pixels = []
+    for region in regions:
+        pixels.extend(image.crop(region).convert("RGB").getdata())
+    return Counter(pixels).most_common(1)[0][0] if pixels else _dominant_color(image, box)
+
+
+def _corridor_matches(image, previous, current):
+    gap_top = int(previous["box"][3])
+    gap_bottom = int(current["box"][1])
+    if gap_bottom <= gap_top + 2:
+        return True
+    left = max(int(previous["box"][0]), int(current["box"][0]))
+    right = min(int(previous["box"][2]), int(current["box"][2]))
+    if right - left < 8:
+        return False
+    inset = max(2, (right - left) // 12)
+    corridor = [left + inset, gap_top, right - inset, gap_bottom]
+    corridor_color = _dominant_color(image, corridor)
+    return _color_distance(corridor_color, previous["background"]) <= 48
+
+
+def _looks_like_header(text):
+    value = text.strip()
+    return bool(
+        re.search(r"\b\d{1,2}:\d{2}\s*$", value)
+        or re.search(r"^\s*[@#&＆]", value)
+        or re.search(r"\bLV\s*\d+", value, re.IGNORECASE)
+    )
+
+
+def _clean_header(text):
+    value = re.sub(r"\s*\b\d{1,2}:\d{2}\s*$", "", text).strip()
+    return value.strip(" \t:@#&＆·•|")
+
+
+def _group_lines(image_path, texts, scores, boxes):
+    from PIL import Image
+
+    with Image.open(image_path) as source:
+        image = source.convert("RGB")
+        lines = []
+        for text, score, box in zip(texts, scores, boxes):
+            value = str(text).strip()
+            if not value:
+                continue
+            normalized_box = [int(number) for number in box]
+            lines.append(
+                {
+                    "text": value,
+                    "score": float(score),
+                    "box": normalized_box,
+                    "background": _line_background(image, normalized_box),
+                }
+            )
+
+        lines.sort(key=lambda item: (item["box"][1], item["box"][0]))
+        blocks = []
+        for line in lines:
+            if not blocks:
+                blocks.append([line])
+                continue
+            previous = blocks[-1][-1]
+            same_background = _color_distance(previous["background"], line["background"]) <= 48
+            previous_height = max(1, previous["box"][3] - previous["box"][1])
+            gap = line["box"][1] - previous["box"][3]
+            close_enough = gap <= max(12, previous_height * 4)
+            if same_background and close_enough and _corridor_matches(image, previous, line):
+                blocks[-1].append(line)
+            else:
+                blocks.append([line])
+
+    nicknames = []
+    messages = []
+    for index, block in enumerate(blocks):
+        text = "\n".join(line["text"] for line in block).strip()
+        is_header = len(block) == 1 and index + 1 < len(blocks) and _looks_like_header(text)
+        if is_header:
+            candidate = _clean_header(text)
+            if candidate and len(candidate) <= 40:
+                nicknames.append(candidate)
+            continue
+        if text:
+            messages.append(text)
+
+    if not messages and lines:
+        messages = ["\n".join(line["text"] for line in lines)]
+    return lines, messages, list(dict.fromkeys(nicknames))[:12]
+
+
+def _recognize(engine, image_path):
+    results = list(engine.predict(image_path))
+    all_texts = []
+    all_scores = []
+    all_boxes = []
+    for result in results:
+        data = result.json if hasattr(result, "json") else result
+        data = data.get("res", data)
+        all_texts.extend(data.get("rec_texts", []))
+        all_scores.extend(data.get("rec_scores", []))
+        all_boxes.extend(data.get("rec_boxes", []))
+
+    lines, messages, nicknames = _group_lines(image_path, all_texts, all_scores, all_boxes)
+    confidence = sum(line["score"] for line in lines) / len(lines) if lines else 0.0
+    return {
+        "rawText": "\n".join(line["text"] for line in lines),
+        "confidence": confidence,
+        "messages": messages,
+        "nicknameCandidates": nicknames,
+        "regions": [
+            {"text": line["text"], "confidence": line["score"], "box": line["box"]}
+            for line in lines
+        ],
+        "engine": "PaddleOCR v6 medium",
+    }
+
+
+def main():
+    os.environ.setdefault(
+        "PADDLE_PDX_CACHE_HOME",
+        str(Path(os.environ.get("LOCALAPPDATA", ".")) / "QuoteVault" / "paddle-models"),
+    )
+    os.environ.setdefault("PADDLE_PDX_MODEL_SOURCE", "BOS")
+    from paddleocr import PaddleOCR
+
+    engine = PaddleOCR(
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
+        use_textline_orientation=False,
+        device=os.environ.get("QUOTEVault_PaddleDevice", "cpu"),
+    )
+    for request_line in sys.stdin:
+        request_line = request_line.strip().lstrip("\ufeff")
+        if not request_line:
+            continue
+        request_id = None
+        try:
+            request = json.loads(request_line)
+            request_id = request.get("id")
+            image_path = request["imagePath"]
+            payload = {"id": request_id, "ok": True, "output": _recognize(engine, image_path)}
+        except Exception as exc:
+            payload = {
+                "id": request_id,
+                "ok": False,
+                "error": str(exc),
+                "details": traceback.format_exc(limit=5),
+            }
+        print(RESULT_PREFIX + json.dumps(payload, ensure_ascii=True, default=_json_default), flush=True)
+
+
+if __name__ == "__main__":
+    main()

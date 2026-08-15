@@ -186,6 +186,7 @@ public sealed class AppStore
             ValidateStoredFileName(screenshot.StoredFileName);
             screenshot.OriginalFileName ??= screenshot.StoredFileName;
             screenshot.OcrRawText ??= string.Empty;
+            screenshot.OcrEngine ??= string.Empty;
             screenshot.DetectedNicknames ??= [];
             screenshot.IgnoredNicknames ??= [];
             screenshot.PersonIds ??= [];
@@ -193,6 +194,9 @@ public sealed class AppStore
             screenshot.Keywords ??= [];
             foreach (var message in screenshot.Messages) message.Text ??= string.Empty;
         }
+        state.Settings.OcrEngine = string.IsNullOrWhiteSpace(state.Settings.OcrEngine)
+            ? "PaddleOcrV6"
+            : state.Settings.OcrEngine;
     }
 
     private static string ValidateStoredFileName(string? fileName)

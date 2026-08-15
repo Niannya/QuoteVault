@@ -39,7 +39,7 @@ public sealed partial class OcrService
         }
         var rawLines = raw.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
         var (messages, nicknames) = SplitChatLines(rawLines);
-        return new OcrOutput(raw, confidence, messages, nicknames);
+        return new OcrOutput(raw, confidence, messages, nicknames, "Tesseract 5");
     }
 
     private static string PrepareImage(string imagePath, out bool isCompact)

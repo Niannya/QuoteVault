@@ -11,6 +11,8 @@ static class Program
             return SelfTest.Run();
         if (args.Length == 2 && args[0].Equals("--ocr-test", StringComparison.OrdinalIgnoreCase))
             return SelfTest.RunOcr(args[1]);
+        if (args.Length == 2 && args[0].Equals("--paddle-ocr-test", StringComparison.OrdinalIgnoreCase))
+            return SelfTest.RunPaddleOcr(args[1]);
         if (args.Contains("--layout-test", StringComparer.OrdinalIgnoreCase))
         {
             ApplicationConfiguration.Initialize();

@@ -8,7 +8,8 @@ QuoteVault 是一款 Windows 本地聊天截图管理工具。它可以从剪贴
 
 - 从剪贴板、文件选择器或拖放操作收录 PNG、JPEG、BMP、GIF 图片。
 - 通过可配置的全局快捷键快速收录，默认快捷键为 `Ctrl+Alt+F8`。
-- 使用 Tesseract 在本机离线识别简体中文和英文聊天内容。
+- 默认使用实验性的 PaddleOCR v6 medium 在本机识别简体中文和英文，并保留 Tesseract 兼容模式。
+- 根据文字坐标与气泡背景合并同一条消息中的多行文本，并分离带时间的昵称行。
 - 收录时可以直接校正识别结果、设置每条消息的发言人、编辑多行消息并添加自定义关键词。
 
 ### 图库组织
@@ -74,9 +75,26 @@ dotnet publish -c Release -r win-x64 --self-contained false
 
 ## OCR 说明
 
-当前使用 Tesseract 5，并打包 `chi_sim` 与 `eng` 模型。聊天截图中的复杂背景、表情、特殊字体和很小的字号可能导致误识别，因此新增和编辑流程始终允许人工修正。
+测试版默认使用 PaddleOCR v6 medium。首次使用前运行：
 
-群昵称候选目前根据 OCR 文本行和常见的“昵称：消息”形式推断。昵称行与消息行分开处理，不会弹出阻塞式确认窗口，也不会在未经用户操作时自动创建成员。
+```powershell
+powershell -ExecutionPolicy Bypass -File .\paddleocr\setup-runtime.ps1
+```
+
+运行环境会安装到 `%LocalAppData%\QuoteVault\paddle-runtime`，模型会在首次识别时下载到 `%LocalAppData%\QuoteVault\paddle-models`。下载完成后识别过程完全在本机执行。设置页可以切换回 Tesseract 5 兼容模式。
+
+当前实验运行环境与模型合计约占用 900 MB，尚未针对正式发布包压缩；后续会再评估原生推理或更轻量的运行时。
+
+可以直接比较两个引擎的输出：
+
+```powershell
+dotnet run -c Release -- --ocr-test "截图.png"
+dotnet run -c Release -- --paddle-ocr-test "截图.png"
+```
+
+聊天截图中的复杂背景、表情、特殊字体和很小的字号仍可能导致误识别，因此新增和编辑流程始终允许人工修正。
+
+PaddleOCR 模式会结合文字坐标、相邻区域背景和常见昵称特征推断消息块；Tesseract 兼容模式仍使用文本行规则。识别结果不会在未经用户操作时自动创建成员。
 
 ## 项目结构
 
@@ -84,5 +102,6 @@ dotnet publish -c Release -r win-x64 --self-contained false
 - `ui/`：主界面、原位弹层、设置页、批量操作和响应式布局。
 - `AppStore.cs`：JSON 索引、图片管理、回收站和备份恢复。
 - `OcrService.cs`：离线 OCR 与群昵称候选提取。
+- `PaddleOcrService.cs`、`paddleocr/`：PaddleOCR v6 实验工作进程、消息分组与运行环境安装。
 - `Models.cs`：数据模型。
 - `SelfTest.cs`：无需 UI 的基础自检。

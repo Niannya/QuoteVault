@@ -21,7 +21,8 @@ public sealed class MainForm : Form
     private const int DwmCornerRound = 2;
 
     private readonly AppStore _store;
-    private readonly OcrService _ocr = new();
+    private readonly OcrService _tesseractOcr = new();
+    private readonly PaddleOcrService _paddleOcr = new();
     private readonly WebView2 _webView = new();
     private readonly JsonSerializerOptions _json = new()
     {
@@ -60,7 +61,11 @@ public sealed class MainForm : Form
         Controls.Add(_webView);
 
         Shown += async (_, _) => await InitializeWebViewAsync();
-        FormClosed += (_, _) => UnregisterConfiguredHotKey();
+        FormClosed += (_, _) =>
+        {
+            UnregisterConfiguredHotKey();
+            _paddleOcr.Dispose();
+        };
         SizeChanged += async (_, _) =>
         {
             ApplyRoundedWindowChrome();
@@ -264,6 +269,7 @@ public sealed class MainForm : Form
         }
         catch (Exception ex)
         {
+            await SetWebBusyAsync(false, string.Empty);
             await ShowWebErrorAsync(ex.Message);
         }
     }
@@ -295,6 +301,7 @@ public sealed class MainForm : Form
                 deletedAt = x.DeletedAt,
                 needsReview = x.NeedsReview,
                 confidence = x.OcrConfidence,
+                ocrEngine = x.OcrEngine,
                 detectedNicknames = x.DetectedNicknames,
                 personIds = x.PersonIds,
                 messages = x.Messages.OrderBy(m => m.SortOrder).Select(m => new
@@ -316,7 +323,9 @@ public sealed class MainForm : Form
                 hotKeyCtrl = _store.State.Settings.HotKeyCtrl,
                 hotKeyAlt = _store.State.Settings.HotKeyAlt,
                 hotKeyShift = _store.State.Settings.HotKeyShift,
-                hotKey = _store.State.Settings.HotKey.ToString()
+                hotKey = _store.State.Settings.HotKey.ToString(),
+                ocrEngine = _store.State.Settings.OcrEngine,
+                paddleAvailable = _paddleOcr.IsAvailable
             }
         };
         await InvokeWebAsync("setState", state);
@@ -331,6 +340,13 @@ public sealed class MainForm : Form
 
     private Task ShowWebErrorAsync(string message) => InvokeWebAsync("showError", message);
     private Task SetWebBusyAsync(bool busy, string text) => InvokeWebAsync("setBusy", new object[] { busy, text });
+
+    private Task<OcrOutput> RecognizeAsync(string imagePath, CancellationToken cancellationToken = default)
+    {
+        if (_store.State.Settings.OcrEngine == "PaddleOcrV6" && _paddleOcr.IsAvailable)
+            return _paddleOcr.RecognizeAsync(imagePath, cancellationToken);
+        return _tesseractOcr.RecognizeAsync(imagePath, cancellationToken);
+    }
 
     private async Task ChooseImageForDraftAsync()
     {
@@ -411,9 +427,10 @@ public sealed class MainForm : Form
             item.NeedsReview = true;
             try
             {
-                var output = await _ocr.RecognizeAsync(_store.GetImageFile(item));
+                var output = await RecognizeAsync(_store.GetImageFile(item));
                 item.OcrRawText = output.RawText;
                 item.OcrConfidence = output.Confidence;
+                item.OcrEngine = output.Engine;
                 item.DetectedNicknames = output.NicknameCandidates.ToList();
                 item.Messages = output.Lines.Select((line, index) => new MessageItem { SortOrder = index, Text = line }).ToList();
             }
@@ -440,7 +457,7 @@ public sealed class MainForm : Form
         {
             await SetWebBusyAsync(true, "正在识别截图…");
             await File.WriteAllBytesAsync(temp, bytes);
-            var output = await _ocr.RecognizeAsync(temp);
+            var output = await RecognizeAsync(temp);
             _draft = new ImportDraft(bytes, name, extension, output);
             var dataUrl = $"data:{MimeForExtension(extension)};base64,{Convert.ToBase64String(bytes)}";
             await InvokeWebAsync("setDraft", new
@@ -448,6 +465,7 @@ public sealed class MainForm : Form
                 name,
                 dataUrl,
                 confidence = output.Confidence,
+                ocrEngine = output.Engine,
                 messages = output.Lines.Select((line, index) => new { sortOrder = index, text = line })
             });
         }
@@ -474,6 +492,7 @@ public sealed class MainForm : Form
         var item = _store.AddImage(_draft.Bytes, _draft.Name, _draft.Extension);
         item.OcrRawText = _draft.Ocr.RawText;
         item.OcrConfidence = _draft.Ocr.Confidence;
+        item.OcrEngine = _draft.Ocr.Engine;
         item.DetectedNicknames = _draft.Ocr.NicknameCandidates.ToList();
         item.Messages = editedMessages.Count > 0
             ? editedMessages.Select(CloneMessage).Where(x => !string.IsNullOrWhiteSpace(x.Text)).ToList()
@@ -550,9 +569,10 @@ public sealed class MainForm : Form
     {
         var item = _store.State.Screenshots.FirstOrDefault(x => x.Id == id) ?? throw new FileNotFoundException("截图不存在。");
         await SetWebBusyAsync(true, "正在重新识别…");
-        var output = await _ocr.RecognizeAsync(_store.GetImageFile(item));
+        var output = await RecognizeAsync(_store.GetImageFile(item));
         item.OcrRawText = output.RawText;
         item.OcrConfidence = output.Confidence;
+        item.OcrEngine = output.Engine;
         item.DetectedNicknames = output.NicknameCandidates.ToList();
         item.Messages = output.Lines.Select((line, index) => new MessageItem { SortOrder = index, Text = line }).ToList();
         _store.Save();
@@ -734,7 +754,9 @@ public sealed class MainForm : Form
             HotKeyCtrl = payload.GetProperty("hotKeyCtrl").GetBoolean(),
             HotKeyAlt = payload.GetProperty("hotKeyAlt").GetBoolean(),
             HotKeyShift = payload.GetProperty("hotKeyShift").GetBoolean(),
-            HotKey = key
+            HotKey = key,
+            OcrEngine = payload.TryGetProperty("ocrEngine", out var engine) &&
+                        engine.GetString() is "Tesseract" ? "Tesseract" : "PaddleOcrV6"
         };
         _store.Save();
         RegisterConfiguredHotKey();
@@ -803,11 +825,16 @@ public sealed class MainForm : Form
         var item = _store.AddImage(bytes, $"剪贴板-{DateTime.Now:yyyyMMdd-HHmmss}.png", ".png");
         try
         {
-            var output = await _ocr.RecognizeAsync(_store.GetImageFile(item));
+            var output = await RecognizeAsync(_store.GetImageFile(item));
             item.OcrRawText = output.RawText;
             item.OcrConfidence = output.Confidence;
+            item.OcrEngine = output.Engine;
             item.DetectedNicknames = output.NicknameCandidates.ToList();
             item.Messages = output.Lines.Select((line, index) => new MessageItem { SortOrder = index, Text = line }).ToList();
+        }
+        catch (Exception ex)
+        {
+            await ShowWebErrorAsync($"截图已加入待处理，但 OCR 失败：{ex.Message}");
         }
         finally
         {

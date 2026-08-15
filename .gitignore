@@ -2,6 +2,8 @@ bin/
 obj/
 .vs/
 *.user
+__pycache__/
+*.pyc
 ui-preview.png
 *.zip
 artifacts/

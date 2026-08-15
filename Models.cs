@@ -43,6 +43,7 @@ public sealed class ScreenshotItem
     public bool NeedsReview { get; set; } = true;
     public string OcrRawText { get; set; } = string.Empty;
     public float OcrConfidence { get; set; }
+    public string OcrEngine { get; set; } = string.Empty;
     public List<string> DetectedNicknames { get; set; } = [];
     public List<string> IgnoredNicknames { get; set; } = [];
     public List<Guid> PersonIds { get; set; } = [];
@@ -68,7 +69,8 @@ public sealed class AppSettings
     public bool HotKeyAlt { get; set; } = true;
     public bool HotKeyShift { get; set; }
     public Keys HotKey { get; set; } = Keys.F8;
+    public string OcrEngine { get; set; } = "PaddleOcrV6";
 }
 
 public sealed record OcrOutput(string RawText, float Confidence, IReadOnlyList<string> Lines,
-    IReadOnlyList<string> NicknameCandidates);
+    IReadOnlyList<string> NicknameCandidates, string Engine = "Tesseract");
