@@ -486,8 +486,8 @@
   function setWindowIcon(mode){windowState=mode;const svg=$('maximizeWindow').querySelector('svg');svg.innerHTML=mode==='maximized'?'<rect x="5" y="3" width="8" height="8" rx="1"/><path d="M11 11v2H3V5h2"/>':'<rect x="3.25" y="3.25" width="9.5" height="9.5" rx="1"/>';}
 
   window.quoteVault={
-    setState(next){state={...state,...next};setBusy(false);renderApp();setActivePanel(state.activePanel||'preview',true);},
-    setDraft(next){draft=next;setBusy(false);state.topView='library';setActivePanel('add',true);},
+    setState(next){state={...state,...next};renderApp();setActivePanel(state.activePanel||'preview',true);},
+    setDraft(next){const stillAdding=state.topView==='library'&&state.activePanel==='add';draft=next;setBusy(false);if(stillAdding)setActivePanel('add',true);else{renderApp();toast('截图识别已完成，可在“添加”中继续处理。');}},
     clearDraft(){draft=null;renderAdd();},setBusy(value,text){Array.isArray(value)?setBusy(value[0],value[1]):setBusy(value,text);},
     showError:toast,setWindowState:setWindowIcon,
     showDuplicate(info){modal(`<h2>发现重复图片</h2><p>图库中已经存在“${esc(info.originalFileName)}”。请选择如何处理。</p><div class="modal-actions"><button class="btn" data-skip>跳过</button><button class="btn" data-view>查看已有截图</button><button class="btn primary" data-import>仍然导入</button></div>`,layer=>{layer.querySelector('[data-skip]').onclick=()=>{layer.remove();post('resolveDuplicate',{action:'skip'});};layer.querySelector('[data-view]').onclick=()=>{layer.remove();post('resolveDuplicate',{action:'view'});};layer.querySelector('[data-import]').onclick=()=>{layer.remove();post('resolveDuplicate',{action:'import'});};});}

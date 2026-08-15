@@ -456,7 +456,9 @@ public sealed class MainForm : Form
         }
         _draft = null;
         await InvokeWebAsync("clearDraft");
-        await SendStateAsync(imported > 0 ? "pending" : "preview");
+        await SendStateAsync();
+        await SetWebBusyAsync(false, string.Empty);
+        if (imported > 0) await InvokeWebAsync("showError", $"已导入 {imported} 张截图，可在待处理中继续整理。");
         if (skippedDuplicates > 0) await InvokeWebAsync("showError", $"已跳过 {skippedDuplicates} 张重复图片。");
     }
 
@@ -471,8 +473,6 @@ public sealed class MainForm : Form
             await File.WriteAllBytesAsync(temp, bytes);
             var output = await RecognizeAsync(temp);
             _draft = new ImportDraft(bytes, name, extension, output);
-            _topView = "library";
-            _activePanel = "add";
             var dataUrl = $"data:{MimeForExtension(extension)};base64,{Convert.ToBase64String(bytes)}";
             await InvokeWebAsync("setDraft", new
             {
@@ -596,7 +596,8 @@ public sealed class MainForm : Form
         item.Messages = CreateMessagesFromOcr(output);
         AddMessagePeople(item);
         _store.Save();
-        await SendStateAsync("edit");
+        await SendStateAsync();
+        await SetWebBusyAsync(false, string.Empty);
     }
 
     private void FinishPending(Guid? id)
@@ -877,6 +878,7 @@ public sealed class MainForm : Form
 
         SaveOcrEngine("PaddleOcrV6");
         await CompleteOcrEngineChangeAsync(payload);
+        await SetWebBusyAsync(false, string.Empty);
         await ShowWebErrorAsync("PaddleOCR 已安装并启用。");
     }
 
