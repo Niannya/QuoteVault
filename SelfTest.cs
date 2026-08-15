@@ -77,13 +77,21 @@ internal static class SelfTest
             var image = new byte[] { 1, 2, 3, 4 };
             var screenshot = store.AddImage(image, "test.png", ".png");
             screenshot.PersonIds.Add(person.Id);
-            screenshot.Messages.Add(new MessageItem { SortOrder = 0, PersonId = person.Id, Text = "今晚打游戏吗？" });
+            screenshot.Messages.Add(new MessageItem
+            {
+                SortOrder = 0,
+                PersonId = person.Id,
+                DetectedNickname = "小明 LV100 王者",
+                Text = "今晚打游戏吗？"
+            });
             screenshot.Keywords.Add("名场面");
             store.Save();
 
             var reloaded = new AppStore(root);
             Assert(reloaded.State.People.Count == 1, "群友持久化");
             Assert(reloaded.State.Screenshots.Single().Messages.Single().Text == "今晚打游戏吗？", "消息持久化");
+            Assert(reloaded.State.Screenshots.Single().Messages.Single().DetectedNickname == "小明 LV100 王者",
+                "识别昵称持久化");
             Assert(reloaded.State.Screenshots.Single().Keywords.SequenceEqual(["名场面"]), "关键词持久化");
             Assert(reloaded.FindDuplicate(AppStore.ComputeSha256(image)) is not null, "重复图片检测");
 

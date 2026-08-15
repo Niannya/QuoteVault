@@ -192,7 +192,13 @@ public sealed class AppStore
             screenshot.PersonIds ??= [];
             screenshot.Messages ??= [];
             screenshot.Keywords ??= [];
-            foreach (var message in screenshot.Messages) message.Text ??= string.Empty;
+            foreach (var message in screenshot.Messages)
+            {
+                message.Text ??= string.Empty;
+                message.DetectedNickname = string.IsNullOrWhiteSpace(message.DetectedNickname)
+                    ? null
+                    : message.DetectedNickname.Trim();
+            }
         }
         if (!state.Settings.HasExplicitOcrChoice)
         {

@@ -76,8 +76,13 @@ def _looks_like_header(text):
     )
 
 
+def _looks_like_level(text):
+    return bool(re.search(r"^\s*(?:LV|等级)\s*\d+", text.strip(), re.IGNORECASE))
+
+
 def _clean_header(text):
     value = re.sub(r"\s*\b\d{1,2}:\d{2}\s*$", "", text).strip()
+    value = re.sub(r"\s*\bLV\s*\d+.*$", "", value, flags=re.IGNORECASE).strip()
     return value.strip(" \t:@#&＆·•|")
 
 
@@ -119,20 +124,34 @@ def _group_lines(image_path, texts, scores, boxes):
 
     nicknames = []
     messages = []
+    message_details = []
+    current_nickname = None
     for index, block in enumerate(blocks):
-        text = "\n".join(line["text"] for line in block).strip()
-        is_header = len(block) == 1 and index + 1 < len(blocks) and _looks_like_header(text)
-        if is_header:
-            candidate = _clean_header(text)
+        content_lines = list(block)
+        first_text = content_lines[0]["text"].strip()
+        has_following_content = len(content_lines) > 1 or index + 1 < len(blocks)
+        first_is_header = has_following_content and (
+            _looks_like_header(first_text)
+            or (len(content_lines) > 1 and _looks_like_level(content_lines[1]["text"]))
+        )
+        if first_is_header:
+            candidate = _clean_header(first_text)
             if candidate and len(candidate) <= 40:
+                current_nickname = candidate
                 nicknames.append(candidate)
-            continue
+            content_lines = content_lines[1:]
+            while content_lines and _looks_like_level(content_lines[0]["text"]):
+                content_lines = content_lines[1:]
+
+        text = "\n".join(line["text"] for line in content_lines).strip()
         if text:
             messages.append(text)
+            message_details.append({"text": text, "nickname": current_nickname})
 
     if not messages and lines:
         messages = ["\n".join(line["text"] for line in lines)]
-    return lines, messages, list(dict.fromkeys(nicknames))[:12]
+        message_details = [{"text": messages[0], "nickname": None}]
+    return lines, messages, message_details, list(dict.fromkeys(nicknames))[:12]
 
 
 def _recognize(engine, image_path):
@@ -147,12 +166,13 @@ def _recognize(engine, image_path):
         all_scores.extend(data.get("rec_scores", []))
         all_boxes.extend(data.get("rec_boxes", []))
 
-    lines, messages, nicknames = _group_lines(image_path, all_texts, all_scores, all_boxes)
+    lines, messages, message_details, nicknames = _group_lines(image_path, all_texts, all_scores, all_boxes)
     confidence = sum(line["score"] for line in lines) / len(lines) if lines else 0.0
     return {
         "rawText": "\n".join(line["text"] for line in lines),
         "confidence": confidence,
         "messages": messages,
+        "messageDetails": message_details,
         "nicknameCandidates": nicknames,
         "regions": [
             {"text": line["text"], "confidence": line["score"], "box": line["box"]}

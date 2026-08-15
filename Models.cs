@@ -60,6 +60,7 @@ public sealed class MessageItem
     public Guid Id { get; set; } = Guid.NewGuid();
     public int SortOrder { get; set; }
     public Guid? PersonId { get; set; }
+    public string? DetectedNickname { get; set; }
     public string Text { get; set; } = string.Empty;
 }
 
@@ -74,4 +75,5 @@ public sealed class AppSettings
 }
 
 public sealed record OcrOutput(string RawText, float Confidence, IReadOnlyList<string> Lines,
-    IReadOnlyList<string> NicknameCandidates, string Engine = "Tesseract");
+    IReadOnlyList<string> NicknameCandidates, string Engine = "Tesseract",
+    IReadOnlyList<string?>? SpeakerNicknames = null);

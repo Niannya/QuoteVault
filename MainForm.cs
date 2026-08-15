@@ -196,9 +196,12 @@ public sealed class MainForm : Form
                     MoveScreenshots(payload);
                     await SendStateAsync("preview");
                     break;
-                case "saveSettings":
-                    SaveSettings(payload);
+                case "saveHotKeySettings":
+                    SaveHotKeySettings(payload);
                     await SendStateAsync();
+                    break;
+                case "setOcrEngine":
+                    await SetOcrEngineAsync(payload);
                     break;
                 case "installPaddleOcr":
                     await InstallPaddleOcrAsync(payload);
@@ -312,6 +315,7 @@ public sealed class MainForm : Form
                     id = m.Id,
                     sortOrder = m.SortOrder,
                     personId = m.PersonId,
+                    detectedNickname = m.DetectedNickname,
                     text = m.Text
                 }),
                 keywords = x.Keywords,
@@ -439,7 +443,8 @@ public sealed class MainForm : Form
                 item.OcrConfidence = output.Confidence;
                 item.OcrEngine = output.Engine;
                 item.DetectedNicknames = output.NicknameCandidates.ToList();
-                item.Messages = output.Lines.Select((line, index) => new MessageItem { SortOrder = index, Text = line }).ToList();
+                item.Messages = CreateMessagesFromOcr(output);
+                AddMessagePeople(item);
             }
             catch
             {
@@ -466,6 +471,8 @@ public sealed class MainForm : Form
             await File.WriteAllBytesAsync(temp, bytes);
             var output = await RecognizeAsync(temp);
             _draft = new ImportDraft(bytes, name, extension, output);
+            _topView = "library";
+            _activePanel = "add";
             var dataUrl = $"data:{MimeForExtension(extension)};base64,{Convert.ToBase64String(bytes)}";
             await InvokeWebAsync("setDraft", new
             {
@@ -473,7 +480,12 @@ public sealed class MainForm : Form
                 dataUrl,
                 confidence = output.Confidence,
                 ocrEngine = output.Engine,
-                messages = output.Lines.Select((line, index) => new { sortOrder = index, text = line })
+                messages = output.Lines.Select((line, index) =>
+                {
+                    var detectedNickname = output.SpeakerNicknames?.ElementAtOrDefault(index);
+                    var personId = ResolveNickname(detectedNickname);
+                    return new { sortOrder = index, text = line, personId, detectedNickname };
+                })
             });
         }
         finally
@@ -503,7 +515,7 @@ public sealed class MainForm : Form
         item.DetectedNicknames = _draft.Ocr.NicknameCandidates.ToList();
         item.Messages = editedMessages.Count > 0
             ? editedMessages.Select(CloneMessage).Where(x => !string.IsNullOrWhiteSpace(x.Text)).ToList()
-            : _draft.Ocr.Lines.Select((line, index) => new MessageItem { SortOrder = index, Text = line }).ToList();
+            : CreateMessagesFromOcr(_draft.Ocr);
         item.NeedsReview = pending;
         item.Keywords = NormalizeKeywords(keywords);
         if (personId is Guid id && _store.State.People.Any(x => x.Id == id)) item.PersonIds.Add(id);
@@ -574,16 +586,15 @@ public sealed class MainForm : Form
 
     private async Task RerunOcrAsync(Guid? id)
     {
-        if (_store.State.Settings.OcrEngine == "None")
-            throw new InvalidOperationException("当前未启用 OCR，请先在设置中选择识别引擎。");
         var item = _store.State.Screenshots.FirstOrDefault(x => x.Id == id) ?? throw new FileNotFoundException("截图不存在。");
-        await SetWebBusyAsync(true, "正在重新识别…");
+        await SetWebBusyAsync(true, _store.State.Settings.OcrEngine == "None" ? "正在关闭当前截图的 OCR…" : "正在重新识别…");
         var output = await RecognizeAsync(_store.GetImageFile(item));
         item.OcrRawText = output.RawText;
         item.OcrConfidence = output.Confidence;
         item.OcrEngine = output.Engine;
         item.DetectedNicknames = output.NicknameCandidates.ToList();
-        item.Messages = output.Lines.Select((line, index) => new MessageItem { SortOrder = index, Text = line }).ToList();
+        item.Messages = CreateMessagesFromOcr(output);
+        AddMessagePeople(item);
         _store.Save();
         await SendStateAsync("edit");
     }
@@ -753,25 +764,81 @@ public sealed class MainForm : Form
             .Where(id => id != Guid.Empty && _store.State.Categories.Any(x => x.Id == id))
             .Distinct().ToList();
 
-    private void SaveSettings(JsonElement payload)
+    private List<MessageItem> CreateMessagesFromOcr(OcrOutput output) =>
+        output.Lines.Select((line, index) => new MessageItem
+        {
+            SortOrder = index,
+            Text = line,
+            PersonId = ResolveNickname(output.SpeakerNicknames?.ElementAtOrDefault(index)),
+            DetectedNickname = output.SpeakerNicknames?.ElementAtOrDefault(index)
+        }).ToList();
+
+    private Guid? ResolveNickname(string? nickname)
+    {
+        if (string.IsNullOrWhiteSpace(nickname)) return null;
+        var mapping = _store.State.NicknameMappings.FirstOrDefault(x =>
+            string.Equals(x.Nickname, nickname, StringComparison.OrdinalIgnoreCase));
+        if (mapping is not null && _store.State.People.Any(x => x.Id == mapping.PersonId)) return mapping.PersonId;
+        return _store.State.People.FirstOrDefault(x =>
+            string.Equals(x.DisplayName, nickname, StringComparison.OrdinalIgnoreCase))?.Id;
+    }
+
+    private void AddMessagePeople(ScreenshotItem item)
+    {
+        foreach (var personId in item.Messages.Select(x => x.PersonId).OfType<Guid>().Distinct())
+            if (!item.PersonIds.Contains(personId)) item.PersonIds.Add(personId);
+    }
+
+    private void SaveHotKeySettings(JsonElement payload)
     {
         var keyText = payload.GetProperty("hotKey").GetString();
         if (!Enum.TryParse<Keys>(keyText, true, out var key) ||
             !(key is >= Keys.A and <= Keys.Z || key is >= Keys.F1 and <= Keys.F12)) key = Keys.F8;
-        _store.State.Settings = new AppSettings
-        {
-            HotKeyCtrl = payload.GetProperty("hotKeyCtrl").GetBoolean(),
-            HotKeyAlt = payload.GetProperty("hotKeyAlt").GetBoolean(),
-            HotKeyShift = payload.GetProperty("hotKeyShift").GetBoolean(),
-            HotKey = key,
-            OcrEngine = payload.TryGetProperty("ocrEngine", out var engine) &&
-                        engine.GetString() is "PaddleOcrV6" or "Tesseract"
-                ? engine.GetString()!
-                : "None",
-            HasExplicitOcrChoice = true
-        };
+        _store.State.Settings.HotKeyCtrl = payload.GetProperty("hotKeyCtrl").GetBoolean();
+        _store.State.Settings.HotKeyAlt = payload.GetProperty("hotKeyAlt").GetBoolean();
+        _store.State.Settings.HotKeyShift = payload.GetProperty("hotKeyShift").GetBoolean();
+        _store.State.Settings.HotKey = key;
         _store.Save();
         RegisterConfiguredHotKey();
+    }
+
+    private async Task SetOcrEngineAsync(JsonElement payload)
+    {
+        var engine = ReadOcrEngine(payload);
+        if (engine == "PaddleOcrV6" && !_paddleOcr.IsFullyInstalled)
+            throw new InvalidOperationException("PaddleOCR 尚未安装。选择安装后才能启用该识别引擎。");
+        SaveOcrEngine(engine);
+        await CompleteOcrEngineChangeAsync(payload);
+    }
+
+    private void SaveOcrEngine(string engine)
+    {
+        _store.State.Settings.OcrEngine = engine;
+        _store.State.Settings.HasExplicitOcrChoice = true;
+        _store.Save();
+    }
+
+    private static string ReadOcrEngine(JsonElement payload) =>
+        payload.TryGetProperty("engine", out var engine) && engine.GetString() is "PaddleOcrV6" or "Tesseract"
+            ? engine.GetString()!
+            : "None";
+
+    private async Task CompleteOcrEngineChangeAsync(JsonElement payload)
+    {
+        var target = payload.TryGetProperty("target", out var targetValue) ? targetValue.GetString() : null;
+        if (target == "draft" && _draft is not null)
+        {
+            var draft = _draft;
+            await SendStateAsync();
+            await PrepareDraftAsync(draft.Bytes, draft.Name, draft.Extension);
+            return;
+        }
+        if (target == "edit")
+        {
+            await RerunOcrAsync(ReadGuid(payload, "id"));
+            return;
+        }
+        await SendStateAsync();
     }
 
     private async Task InstallPaddleOcrAsync(JsonElement payload)
@@ -808,8 +875,8 @@ public sealed class MainForm : Form
         if (!_paddleOcr.IsFullyInstalled)
             throw new InvalidOperationException("安装程序已结束，但 PaddleOCR 运行环境或模型不完整。");
 
-        SaveSettings(payload);
-        await SendStateAsync();
+        SaveOcrEngine("PaddleOcrV6");
+        await CompleteOcrEngineChangeAsync(payload);
         await ShowWebErrorAsync("PaddleOCR 已安装并启用。");
     }
 
@@ -881,7 +948,8 @@ public sealed class MainForm : Form
             item.OcrConfidence = output.Confidence;
             item.OcrEngine = output.Engine;
             item.DetectedNicknames = output.NicknameCandidates.ToList();
-            item.Messages = output.Lines.Select((line, index) => new MessageItem { SortOrder = index, Text = line }).ToList();
+            item.Messages = CreateMessagesFromOcr(output);
+            AddMessagePeople(item);
         }
         catch (Exception ex)
         {
@@ -990,6 +1058,9 @@ public sealed class MainForm : Form
             Id = ReadGuid(element, "id") ?? Guid.NewGuid(),
             SortOrder = index,
             PersonId = ReadGuid(element, "personId"),
+            DetectedNickname = element.TryGetProperty("detectedNickname", out var nickname)
+                ? nickname.GetString()?.Trim()
+                : null,
             Text = element.TryGetProperty("text", out var text) ? text.GetString()?.Trim() ?? string.Empty : string.Empty
         }).Where(x => !string.IsNullOrWhiteSpace(x.Text)).ToList();
     }
@@ -999,6 +1070,7 @@ public sealed class MainForm : Form
         Id = source.Id,
         SortOrder = source.SortOrder,
         PersonId = source.PersonId,
+        DetectedNickname = source.DetectedNickname,
         Text = source.Text
     };
 

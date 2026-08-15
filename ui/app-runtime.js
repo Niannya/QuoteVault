@@ -131,10 +131,25 @@
     return layer;
   }
 
-  function askConfirm(title, text, action, danger = false) {
-    modal(`<h2>${esc(title)}</h2><p>${esc(text)}</p><div class="modal-actions"><button class="btn" data-cancel>取消</button><button class="btn ${danger ? 'danger' : 'primary'}" data-confirm>确定</button></div>`, layer => {
+  function askConfirm(title, text, action, danger = false, confirmLabel = '确定') {
+    modal(`<h2>${esc(title)}</h2><p>${esc(text)}</p><div class="modal-actions"><button class="btn" data-cancel>取消</button><button class="btn ${danger ? 'danger' : 'primary'}" data-confirm>${esc(confirmLabel)}</button></div>`, layer => {
       layer.querySelector('[data-confirm]').addEventListener('click', () => { layer.remove(); action(); });
     });
+  }
+
+  function ocrEngineOptions(selected=state.settings?.ocrEngine||'None') {
+    return `<option value="None" ${selected==='None'?'selected':''}>不使用 OCR</option><option value="PaddleOcrV6" ${selected==='PaddleOcrV6'?'selected':''}>PaddleOCR v6${state.settings?.paddleAvailable?'':' · 未安装'}</option><option value="Tesseract" ${selected==='Tesseract'?'selected':''}>Tesseract 5</option>`;
+  }
+
+  function requestOcrChange(engine, target='settings', id=null, confirmOverwrite=false, onAccepted=null) {
+    const payload={engine,target,id};
+    const apply=()=>{
+      if(engine==='PaddleOcrV6'&&!state.settings?.paddleAvailable){
+        askConfirm('安装 PaddleOCR','PaddleOCR 运行环境和识别模型尚未安装。下载后预计占用约 900 MB，文件保存在本机。是否现在下载安装？',()=>{onAccepted?.();post('installPaddleOcr',payload);},false,'安装并启用');
+      } else {onAccepted?.();post('setOcrEngine',payload);}
+    };
+    if(confirmOverwrite) askConfirm('重新识别截图','切换识别方式会重新识别当前截图，并替换尚未保存的消息内容。是否继续？',apply,false,'切换并识别');
+    else apply();
   }
 
   function groupPath(group) {
@@ -392,33 +407,37 @@
 
   function renderAdd(){
     const host=$('add'),current=selectedMember();
-    if(!draft){host.innerHTML=`<div class="panel-header"><h2>添加截图</h2></div><div class="dropzone" id="dropzone"><div><div class="dropicon">＋</div><b>拖入截图或选择本地文件</b><div class="or">支持多选 PNG、JPG、BMP、GIF</div><button class="btn" id="chooseImage">选择图片</button></div></div><div class="formrow"><button class="btn" id="clipboardImage" style="width:100%">从剪贴板读取图片并识别</button></div><div class="formrow"><label>默认加入</label><div class="field" style="display:flex;align-items:center">${esc(current?.displayName||'请先选择成员图库')}</div><button class="btn" id="quickCreateMember" style="width:100%;margin-top:8px">＋ 新建成员图库</button></div><div class="pending-note">单张图片可直接加入当前图库；批量导入会进入待处理，方便统一整理。</div>`;
+    if(!draft){host.innerHTML=`<div class="panel-header"><h2>添加截图</h2></div><div class="ocr-quick"><label for="addOcrEngine">识别方式</label><select id="addOcrEngine">${ocrEngineOptions()}</select></div><div class="dropzone" id="dropzone"><div><div class="dropicon">＋</div><b>拖入截图或选择本地文件</b><div class="or">支持多选 PNG、JPG、BMP、GIF</div><button class="btn" id="chooseImage">选择图片</button></div></div><div class="formrow"><button class="btn" id="clipboardImage" style="width:100%">从剪贴板读取图片</button></div><div class="formrow"><label>默认加入</label><div class="field" style="display:flex;align-items:center">${esc(current?.displayName||'请先选择成员图库')}</div><button class="btn" id="quickCreateMember" style="width:100%;margin-top:8px">＋ 新建成员图库</button></div><div class="pending-note">单张图片可直接加入当前图库；批量导入会进入待处理，方便统一整理。</div>`;
+      $('addOcrEngine').onchange=e=>requestOcrChange(e.target.value,'settings');
       $('chooseImage').onclick=()=>post('chooseImage');$('clipboardImage').onclick=()=>post('prepareClipboard');$('quickCreateMember').onclick=()=>openMemberModal();
       const dz=$('dropzone');['dragenter','dragover'].forEach(n=>dz.addEventListener(n,e=>{e.preventDefault();dz.style.borderColor='#444';}));['dragleave','drop'].forEach(n=>dz.addEventListener(n,e=>{e.preventDefault();dz.style.borderColor='';}));
       dz.addEventListener('drop',e=>readDroppedFiles([...e.dataTransfer.files].filter(f=>f.type.startsWith('image/'))));return;
     }
     const rows=(draft.messages?.length?draft.messages:[{id:crypto.randomUUID(),text:'',personId:current?.id||null}]).map(m=>({...m,personId:m.personId||current?.id||null}));
-    host.innerHTML=`<div class="panel-header"><h2>添加并校正</h2><span class="muted">${esc(ocrSummary(draft.ocrEngine||'OCR',draft.confidence))}</span></div><div class="bigpreview"><img class="real-image" src="${esc(draft.dataUrl)}"/></div><div class="edit-tip">ID 可以留空；多行文字可在同一个文本框内直接校正</div><div class="message-editor compact"><div class="message-editor-head"><span>ID（可不指定）</span><span>消息内容</span></div><div class="message-list" id="draftChatStream">${rows.map(messageRow).join('')}</div><button class="message-add" id="addDraftMessage">＋ 添加一条消息</button></div><div class="section"><div class="section-title">目标图库</div><div class="chips">${current?`<span class="chip">${esc(current.displayName)}</span>`:'<span class="muted">未选择成员图库</span>'}</div></div><div class="section"><div class="section-title">关键词（可选，以逗号分隔）</div><input class="keyword-input" id="draftKeywords" placeholder="例如：加班，名场面"/></div><div class="actions"><button class="btn" id="cancelDraft">取消</button><button class="btn" id="commitPending">暂存</button><button class="btn primary" id="commitCurrent" ${current?'':'disabled'}>加入图库</button></div>`;
+    host.innerHTML=`<div class="panel-header"><h2>添加并校正</h2><span class="muted">${esc(ocrSummary(draft.ocrEngine||'OCR',draft.confidence))}</span></div><div class="ocr-quick"><label for="draftOcrEngine">识别方式</label><select id="draftOcrEngine">${ocrEngineOptions()}</select><button class="btn" id="rerunDraftOcr" ${state.settings?.ocrEngine==='None'?'disabled':''}>重新识别</button></div><div class="bigpreview"><img class="real-image" src="${esc(draft.dataUrl)}"/></div><div class="edit-tip">识别到的昵称显示在 ID 栏；群等级不会写入消息内容</div><div class="message-editor compact"><div class="message-editor-head"><span>ID（可不指定）</span><span>消息内容</span></div><div class="message-list" id="draftChatStream">${rows.map(messageRow).join('')}</div><button class="message-add" id="addDraftMessage">＋ 添加一条消息</button></div><div class="section"><div class="section-title">目标图库</div><div class="chips">${current?`<span class="chip">${esc(current.displayName)}</span>`:'<span class="muted">未选择成员图库</span>'}</div></div><div class="section"><div class="section-title">关键词（可选，以逗号分隔）</div><input class="keyword-input" id="draftKeywords" placeholder="例如：加班，名场面"/></div><div class="actions"><button class="btn" id="cancelDraft">取消</button><button class="btn" id="commitPending">暂存</button><button class="btn primary" id="commitCurrent" ${current?'':'disabled'}>加入图库</button></div>`;
     bindMessageEditor(host);
+    $('draftOcrEngine').onchange=e=>{const engine=e.target.value;e.target.value=state.settings?.ocrEngine||'None';requestOcrChange(engine,'draft',null,true);};
+    $('rerunDraftOcr').onclick=()=>askConfirm('重新识别截图','重新识别会替换尚未保存的消息内容。是否继续？',()=>requestOcrChange(state.settings?.ocrEngine||'None','draft'),false,'重新识别');
     $('addDraftMessage').onclick=()=>{$('draftChatStream').insertAdjacentHTML('beforeend',messageRow({id:crypto.randomUUID(),personId:null,text:''}));bindMessageEditor(host);$('draftChatStream').lastElementChild.querySelector('[data-text]').focus();};
     $('cancelDraft').onclick=()=>{draft=null;post('cancelDraft');renderAdd();};
     $('commitPending').onclick=()=>commitDraft(true,current);$('commitCurrent').onclick=()=>commitDraft(false,current);
   }
 
-  function collectMessageRows(streamId){return [...$(streamId).querySelectorAll('.message-row')].map((r,i)=>({id:r.dataset.message||crypto.randomUUID(),sortOrder:i,personId:r.querySelector('[data-speaker]').value||null,text:r.querySelector('[data-text]').value.trim()})).filter(x=>x.text);}
+  function collectMessageRows(streamId){return [...$(streamId).querySelectorAll('.message-row')].map((r,i)=>({id:r.dataset.message||crypto.randomUUID(),sortOrder:i,personId:r.querySelector('[data-speaker]').value||null,detectedNickname:r.dataset.detected||null,text:r.querySelector('[data-text]').value.trim()})).filter(x=>x.text);}
   function commitDraft(pending,current){post('commitDraft',{pending,personId:current?.id||null,keywords:keywords($('draftKeywords')?.value),messages:collectMessageRows('draftChatStream')});}
   function readDroppedFiles(files){if(!files.length)return;Promise.all(files.map(file=>new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve({name:file.name,dataUrl:r.result});r.onerror=reject;r.readAsDataURL(file);}))).then(items=>items.length===1?post('prepareDroppedImage',items[0]):post('prepareDroppedImages',{items}));}
-  function speakerOptions(id){return `<option value="">未指定</option>${state.people.map(p=>`<option value="${p.id}" ${p.id===id?'selected':''}>${esc(p.displayName)}</option>`).join('')}`;}
+  function speakerOptions(id,detectedNickname){const detected=!id&&detectedNickname?`<option value="" selected>识别到：${esc(detectedNickname)}（请选择成员）</option>`:'';return `${detected}<option value="" ${!id&&!detectedNickname?'selected':''}>未指定</option>${state.people.map(p=>`<option value="${p.id}" ${p.id===id?'selected':''}>${esc(p.displayName)}</option>`).join('')}`;}
 
   function renderEdit(){
     const host=$('edit'),shot=selectedScreenshot(); if(!shot||shot.deletedAt){emptyPanel(host,'选择一张截图','从成员图库中选择截图后，可直接修改聊天内容。');return;}
     const rows=shot.messages.length?shot.messages:[{id:crypto.randomUUID(),personId:state.selectedPersonId,text:''}];
-    host.innerHTML=`<div class="panel-header"><h2>${state.topView==='pending'?'继续处理截图':'编辑截图'}</h2><span class="muted">${rows.length} 条消息</span></div><div class="edit-tip">ID 可以留空；每个文本框对应一条消息并支持多行</div><div class="message-editor"><div class="message-editor-head"><span>ID（可不指定）</span><span>消息内容</span><button class="message-ocr" id="rerunOcr">重新 OCR</button></div><div class="message-list" id="chatStream">${rows.map(messageRow).join('')}</div><button class="message-add" id="addMessage">＋ 添加一条消息</button></div><div class="section"><div class="section-title">关键词（可选）</div><input class="keyword-input" id="editKeywords" value="${esc((shot.keywords||[]).join('，'))}" placeholder="以逗号分隔"/></div><div class="actions"><button class="btn" id="cancelEdit">取消</button><button class="btn primary" id="saveEdit">${state.topView==='pending'?'保存并完成':'保存修改'}</button></div>`;
+    host.innerHTML=`<div class="panel-header"><h2>${state.topView==='pending'?'继续处理截图':'编辑截图'}</h2><span class="muted">${rows.length} 条消息</span></div><div class="ocr-quick"><label for="editOcrEngine">识别方式</label><select id="editOcrEngine">${ocrEngineOptions()}</select><button class="btn" id="rerunOcr" ${state.settings?.ocrEngine==='None'?'disabled':''}>重新识别</button></div><div class="edit-tip">识别到的昵称显示在 ID 栏；群等级不会写入消息内容</div><div class="message-editor"><div class="message-editor-head"><span>ID（可不指定）</span><span>消息内容</span><span></span></div><div class="message-list" id="chatStream">${rows.map(messageRow).join('')}</div><button class="message-add" id="addMessage">＋ 添加一条消息</button></div><div class="section"><div class="section-title">关键词（可选）</div><input class="keyword-input" id="editKeywords" value="${esc((shot.keywords||[]).join('，'))}" placeholder="以逗号分隔"/></div><div class="actions"><button class="btn" id="cancelEdit">取消</button><button class="btn primary" id="saveEdit">${state.topView==='pending'?'保存并完成':'保存修改'}</button></div>`;
     bindEdit();$('addMessage').onclick=()=>{$('chatStream').insertAdjacentHTML('beforeend',messageRow({id:crypto.randomUUID(),personId:null,text:''}));editDirty=true;bindEdit();$('chatStream').lastElementChild.querySelector('[data-text]').focus();};
     $('cancelEdit').onclick=()=>{editDirty=false;setActivePanel('preview',true);};$('saveEdit').onclick=saveEdit;
-    $('rerunOcr').onclick=()=>askConfirm('重新识别','重新 OCR 会覆盖当前编辑内容，确定继续？',()=>post('rerunOcr',{id:shot.id}));
+    $('editOcrEngine').onchange=e=>{const engine=e.target.value;e.target.value=state.settings?.ocrEngine||'None';requestOcrChange(engine,'edit',shot.id,true,()=>editDirty=false);};
+    $('rerunOcr').onclick=()=>askConfirm('重新识别截图','重新识别会替换尚未保存的消息内容。是否继续？',()=>{editDirty=false;requestOcrChange(state.settings?.ocrEngine||'None','edit',shot.id);},false,'重新识别');
   }
-  function messageRow(m){return `<div class="message-row" data-message="${esc(m.id||'')}"><select class="message-speaker" data-speaker aria-label="消息 ID">${speakerOptions(m.personId)}</select><textarea class="message-text" data-text rows="2" aria-label="消息内容" placeholder="输入消息内容">${esc(m.text)}</textarea><button class="message-remove" data-remove title="删除这条消息" aria-label="删除这条消息">×</button></div>`;}
+  function messageRow(m){return `<div class="message-row" data-message="${esc(m.id||'')}" data-detected="${esc(m.detectedNickname||'')}"><select class="message-speaker" data-speaker aria-label="消息 ID">${speakerOptions(m.personId,m.detectedNickname)}</select><textarea class="message-text" data-text rows="2" aria-label="消息内容" placeholder="输入消息内容">${esc(m.text)}</textarea><button class="message-remove" data-remove title="删除这条消息" aria-label="删除这条消息">×</button></div>`;}
   function bindMessageEditor(host){host.querySelectorAll('[data-remove]').forEach(n=>n.onclick=()=>n.closest('.message-row').remove());}
   function bindEdit(){const h=$('edit');h.querySelectorAll('textarea,select,input').forEach(n=>n.oninput=()=>editDirty=true);h.querySelectorAll('[data-remove]').forEach(n=>n.onclick=()=>{n.closest('.message-row').remove();editDirty=true;});}
   function saveEdit(){const shot=selectedScreenshot(),messages=collectMessageRows('chatStream');post('saveEdit',{id:shot.id,messages,personIds:[...new Set(messages.map(x=>x.personId).filter(Boolean))],keywords:keywords($('editKeywords').value)});editDirty=false;}
@@ -426,16 +445,12 @@
   function renderSettings(){
     const s=state.settings||{},keys=[...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'].concat(Array.from({length:12},(_,i)=>`F${i+1}`));
     const selected=['None','PaddleOcrV6','Tesseract'].includes(s.ocrEngine)?s.ocrEngine:'None';
-    const paddleStatus=s.paddleAvailable?'已安装，可直接使用':'未安装；选择后由你确认是否下载（约 900 MB）';
-    $('settingsPage').innerHTML=`<h1>设置</h1><div class="settings-lead">管理 QuoteVault 的 OCR、快捷键、数据与备份。</div><div class="settings-card"><h2>OCR 引擎</h2><p>默认不进行 OCR。PaddleOCR 更适合中文聊天截图，但运行环境与模型较大，仅在你确认后安装。</p><div class="ocr-row"><select id="ocrEngine"><option value="None" ${selected==='None'?'selected':''}>不使用 OCR（默认）</option><option value="PaddleOcrV6" ${selected==='PaddleOcrV6'?'selected':''}>PaddleOCR v6 medium${s.paddleAvailable?'':' · 未安装'}</option><option value="Tesseract" ${selected==='Tesseract'?'selected':''}>Tesseract 5（轻量兼容）</option></select><span class="muted">${paddleStatus}</span></div></div><div class="settings-card"><h2>全局收录快捷键</h2><p>按下快捷键后，将剪贴板图片静默加入待处理。</p><div class="hotkey-row"><label><input id="hotCtrl" type="checkbox" ${s.hotKeyCtrl?'checked':''}/>Ctrl</label><label><input id="hotAlt" type="checkbox" ${s.hotKeyAlt?'checked':''}/>Alt</label><label><input id="hotShift" type="checkbox" ${s.hotKeyShift?'checked':''}/>Shift</label><select id="hotKey">${keys.map(k=>`<option ${k===s.hotKey?'selected':''}>${k}</option>`).join('')}</select><button class="btn primary" id="saveSettings">保存设置</button></div></div><div class="settings-card"><h2>数据与备份</h2><p>备份包含索引、成员、群组、关键词和全部原图。</p><div class="smallrow"><button class="btn" id="backupData">导出完整备份</button><button class="btn" id="restoreData">从备份恢复</button></div></div>`;
-    $('saveSettings').onclick=()=>{
+    const paddleStatus=s.paddleAvailable?'PaddleOCR 已安装，可直接使用':'PaddleOCR 尚未安装；切换时会先显示安装确认，不会自动下载';
+    $('settingsPage').innerHTML=`<h1>设置</h1><div class="settings-lead">管理 QuoteVault 的 OCR、快捷键、数据与备份。</div><div class="settings-card"><h2>OCR 引擎</h2><p>选择后立即生效。默认不进行 OCR；PaddleOCR 适合中文聊天截图，但运行环境与模型约占用 900 MB。</p><div class="ocr-row"><select id="ocrEngine">${ocrEngineOptions(selected)}</select><span class="muted">${paddleStatus}</span></div></div><div class="settings-card"><h2>全局收录快捷键</h2><p>按下快捷键后，将剪贴板图片静默加入待处理。</p><div class="hotkey-row"><label><input id="hotCtrl" type="checkbox" ${s.hotKeyCtrl?'checked':''}/>Ctrl</label><label><input id="hotAlt" type="checkbox" ${s.hotKeyAlt?'checked':''}/>Alt</label><label><input id="hotShift" type="checkbox" ${s.hotKeyShift?'checked':''}/>Shift</label><select id="hotKey">${keys.map(k=>`<option ${k===s.hotKey?'selected':''}>${k}</option>`).join('')}</select><button class="btn primary" id="saveHotKey">保存快捷键</button></div></div><div class="settings-card"><h2>数据与备份</h2><p>备份包含索引、成员、群组、关键词和全部原图。</p><div class="smallrow"><button class="btn" id="backupData">导出完整备份</button><button class="btn" id="restoreData">从备份恢复</button></div></div>`;
+    $('ocrEngine').onchange=e=>{const engine=e.target.value;e.target.value=selected;requestOcrChange(engine,draft?'draft':'settings',null,!!draft);};
+    $('saveHotKey').onclick=()=>{
       if(!$('hotCtrl').checked&&!$('hotAlt').checked&&!$('hotShift').checked)return toast('至少选择一个修饰键。');
-      const payload={hotKeyCtrl:$('hotCtrl').checked,hotKeyAlt:$('hotAlt').checked,hotKeyShift:$('hotShift').checked,hotKey:$('hotKey').value,ocrEngine:$('ocrEngine').value};
-      if(payload.ocrEngine==='PaddleOcrV6'&&!s.paddleAvailable){
-        askConfirm('安装 PaddleOCR','需要下载 PaddleOCR 运行环境和识别模型，预计占用约 900 MB。安装完成前不会启用，是否继续？',()=>post('installPaddleOcr',payload));
-        return;
-      }
-      post('saveSettings',payload);toast('设置已保存');
+      post('saveHotKeySettings',{hotKeyCtrl:$('hotCtrl').checked,hotKeyAlt:$('hotAlt').checked,hotKeyShift:$('hotShift').checked,hotKey:$('hotKey').value});toast('快捷键已保存');
     };
     $('backupData').onclick=()=>post('createBackup');$('restoreData').onclick=()=>askConfirm('恢复备份','恢复会替换当前图库；操作前会自动创建安全备份。',()=>post('restoreBackup'));
   }
