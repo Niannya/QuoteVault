@@ -4,7 +4,7 @@ namespace QuoteVault;
 
 public sealed class AppState
 {
-    public int SchemaVersion { get; set; } = 1;
+    public int SchemaVersion { get; set; } = 2;
     public List<CategoryItem> Categories { get; set; } = [];
     public List<PersonItem> People { get; set; } = [];
     public List<NicknameMapping> NicknameMappings { get; set; } = [];
@@ -42,8 +42,14 @@ public sealed class ScreenshotItem
     public DateTimeOffset? DeletedAt { get; set; }
     public bool NeedsReview { get; set; } = true;
     public string OcrRawText { get; set; } = string.Empty;
+    public string SearchText { get; set; } = string.Empty;
     public float OcrConfidence { get; set; }
     public string OcrEngine { get; set; } = string.Empty;
+    public string OcrEngineKey { get; set; } = "None";
+    public Guid? LibraryId { get; set; }
+    public List<string> Tags { get; set; } = [];
+
+    // 以下字段只用于兼容旧版数据。新版不再建立截图、消息和成员之间的语义关联。
     public List<string> DetectedNicknames { get; set; } = [];
     public List<string> IgnoredNicknames { get; set; } = [];
     public List<Guid> PersonIds { get; set; } = [];
@@ -51,8 +57,7 @@ public sealed class ScreenshotItem
     public List<string> Keywords { get; set; } = [];
 
     [JsonIgnore]
-    public string CorrectedText => string.Join(Environment.NewLine,
-        Messages.OrderBy(x => x.SortOrder).Select(x => x.Text).Where(x => !string.IsNullOrWhiteSpace(x)));
+    public string CorrectedText => SearchText;
 }
 
 public sealed class MessageItem

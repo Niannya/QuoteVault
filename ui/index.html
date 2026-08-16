@@ -94,6 +94,7 @@
     .context-menu{position:fixed;min-width:176px;padding:6px;background:#fff;border:1px solid var(--line);border-radius:11px;box-shadow:0 14px 38px #0002;z-index:50}.context-menu button{display:flex;width:100%;height:34px;align-items:center;border:0;border-radius:7px;background:transparent;padding:0 10px;color:#333;font-size:12px}.context-menu button:hover{background:#efefeb}.context-menu .separator{height:1px;background:var(--line-soft);margin:5px}.context-menu button.danger:hover{background:#faeeee}
     .modal-layer{position:fixed;inset:0;background:#0004;display:grid;place-items:center;z-index:80;padding:20px}.inline-modal{width:min(460px,92vw);max-height:min(650px,88vh);overflow:auto;background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:0 24px 80px #0004;padding:22px}.inline-modal h2{margin:0 0 6px;font-size:19px}.inline-modal p{margin:0 0 18px;color:#85857f;font-size:12px}.modal-field{margin:14px 0}.modal-field label{display:block;margin-bottom:7px;color:#666;font-size:12px;font-weight:650}.modal-field input{width:100%;height:40px;border:1px solid var(--line);border-radius:9px;padding:0 11px;outline:none}.modal-field input:focus{border-color:#444;box-shadow:0 0 0 2px #2221}.group-checks{display:grid;gap:6px;max-height:220px;overflow:auto;padding:4px}.modal-field label.group-check{display:flex;align-items:center;gap:8px;height:32px;margin:0;font-size:12px}.modal-field .group-check input[type="checkbox"]{width:16px;height:16px;min-width:16px;padding:0;margin:0;accent-color:#222;box-shadow:none}.modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}.library-picker{max-height:330px;overflow:auto;border:1px solid var(--line);border-radius:10px;background:#fafaf8;padding:6px}.library-group+.library-group{margin-top:5px}.library-group-title{height:28px;display:flex;align-items:center;padding-left:calc(8px + var(--depth,0)*12px);font-size:11px;font-weight:650;color:#85857f}.library-choice{width:100%;height:38px;border:0;border-radius:8px;background:transparent;display:flex;align-items:center;gap:9px;padding:0 9px 0 calc(9px + var(--depth,0)*12px);color:#333;text-align:left}.library-choice:hover{background:#eeeeea}.library-choice.active{background:#deded8;font-weight:650}.library-choice .avatar{width:23px;height:23px;border-radius:6px}.picker-empty{padding:22px;text-align:center;color:#888;font-size:12px}
     .keyword-input{width:100%;height:40px;border:1px solid var(--line);border-radius:9px;padding:0 11px;outline:none;background:#fff}.keyword-input:focus{border-color:#555;box-shadow:0 0 0 2px #2221}
+    .text-section{display:flex;flex-direction:column}.search-textarea{width:100%;min-height:220px;resize:vertical;border:1px solid var(--line);border-radius:11px;padding:12px 13px;outline:none;background:#fff;color:#292927;font-size:13px;line-height:1.65}.search-textarea:focus{border-color:#666;box-shadow:0 0 0 2px #fff1}.edit-text-section{flex:1 1 420px;min-height:300px}.edit-text-section .search-textarea{height:100%;min-height:280px;resize:none}.library-target{width:100%;height:44px;border:1px solid var(--line);border-radius:10px;background:#fff;color:#333;padding:0 12px;display:flex;align-items:center;text-align:left}.library-target span:last-child{margin-left:auto;color:#888;font-size:12px}
     .settings-page{display:none;grid-column:1/-1;background:#f7f7f5;min-height:0;overflow:auto;padding:38px max(32px,calc((100% - 900px)/2))}.workspace.settings-mode>.sidebar,.workspace.settings-mode>.library,.workspace.settings-mode>.workbench{display:none}.workspace.settings-mode>.settings-page{display:block}.settings-page h1{font-size:26px;margin:0 0 6px}.settings-lead{color:#777;margin-bottom:28px}.settings-card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:20px 22px;margin-bottom:14px}.settings-card h2{font-size:15px;margin:0 0 5px}.settings-card p{font-size:12px;color:#888;margin:0 0 16px}.hotkey-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap}.hotkey-row label{display:flex;gap:6px;align-items:center}.hotkey-row select{height:36px;border:1px solid var(--line);border-radius:8px;padding:0 28px 0 10px;background:#fff}
     @media(max-width:1200px){
       .workspace{grid-template-columns:210px minmax(0,1fr) 470px}
@@ -114,7 +115,7 @@
     .titlebar,.statusbar{background:#141513}.appmark{background:var(--accent);color:#171816}.version{color:#85867f}
     .window-action{color:#aaa}.window-action:hover{background:#292a27;color:var(--text)}.window-action.close:hover{background:#542a2a;color:#ffb0aa}
     .topnav{background:var(--panel)}.tab.active{color:var(--text)}.topitem.active:after,.tab.active:after{background:var(--accent)}
-    .sidehead button{color:#aaa}.sidehead button:hover{background:#292a27}.search,.lib-toolbar .search{background:#20211e;border-color:var(--line);color:#8f9089}.search input,.keyword-input,.field,.modal-field input,.hotkey-row select{color:var(--text);background:#20211e}.search input::placeholder,.keyword-input::placeholder,.message-text::placeholder{color:#777870}.search-clear:hover{background:#30312d;color:var(--text)}
+    .sidehead button{color:#aaa}.sidehead button:hover{background:#292a27}.search,.lib-toolbar .search{background:#20211e;border-color:var(--line);color:#8f9089}.search input,.keyword-input,.field,.modal-field input,.hotkey-row select,.search-textarea,.library-target{color:var(--text);background:#20211e}.search input::placeholder,.keyword-input::placeholder,.message-text::placeholder,.search-textarea::placeholder{color:#777870}.search-clear:hover{background:#30312d;color:var(--text)}
     .group-title,.friend{color:#b8b9b2}.friend:hover{background:#242522}.friend.active{background:var(--selected);color:var(--text)}.count,.sidefoot{color:#777870}
     .sidehead button:hover,.side-action:hover,.side-action.active{background:#242522}.side-action{background:#1b1c19;border-color:var(--line);color:#a4a59e}.side-action .badge,.badge{background:#30312d;color:#c9cac3}
     .iconbtn,.btn{background:#20211e;border-color:var(--line);color:#d4d5ce}.iconbtn:hover,.btn:hover{background:#292a27}.iconbtn.active,.btn.primary{background:var(--accent);border-color:var(--accent);color:#161715}
@@ -131,7 +132,7 @@
 </head>
 <body>
 <div class="app">
-  <div class="titlebar" id="titlebar"><div class="appmark">Q</div><span class="apptitle">QuoteVault</span><span class="version">0.3.3-test · 本地聊天截图库</span><div class="window-actions">
+  <div class="titlebar" id="titlebar"><div class="appmark">Q</div><span class="apptitle">QuoteVault</span><span class="version">0.4.0-test · 本地聊天截图库</span><div class="window-actions">
     <button class="window-action" id="minimizeWindow" aria-label="最小化" title="最小化"><svg viewBox="0 0 16 16"><path d="M3 8.5h10"/></svg></button>
     <button class="window-action" id="maximizeWindow" aria-label="最大化或还原" title="最大化或还原"><svg viewBox="0 0 16 16"><rect x="3.25" y="3.25" width="9.5" height="9.5" rx="1"/></svg></button>
     <button class="window-action close" id="closeWindow" aria-label="关闭" title="关闭"><svg viewBox="0 0 16 16"><path d="m4 4 8 8M12 4l-8 8"/></svg></button>
@@ -179,39 +180,22 @@
       <section class="panel active" id="preview">
         <div class="panel-header"><h2>截图预览</h2><span class="muted">8月10日 21:34</span></div>
         <div class="bigpreview"><div class="shot"><div class="bubble"></div><div class="bubble me long"></div><div class="bubble short"></div><div class="bubble me"></div></div></div>
-        <div class="section"><div class="section-title">关联成员</div><div class="chips"><span class="chip">熬夜冠军</span><span class="chip">小红</span></div></div>
-        <div class="section"><div class="section-title">消息内容</div><div class="message-box"><div><span class="msg-person">熬夜冠军</span>今晚打游戏吗？</div><div><span class="msg-person">小红</span>不行，我要加班。</div><div><span class="msg-person">熬夜冠军</span>那我先睡一会。</div></div></div>
-        <div class="actions"><button class="btn">在资源管理器中显示</button><button class="btn primary">复制到剪贴板</button></div>
+        <div class="section"><div class="section-title">标签</div><div class="chips"><span class="chip">#名场面</span></div></div>
+        <div class="section"><div class="section-title">可搜索文本</div><div class="message-box">今晚打游戏吗？</div></div>
+        <div class="actions"><button class="btn">取消</button><button class="btn primary">复制到剪贴板</button></div>
       </section>
       <section class="panel" id="add">
         <div class="panel-header"><h2>添加截图</h2></div>
         <div class="dropzone"><div><div class="dropicon">＋</div><b>拖入截图或选择本地文件</b><div class="or">支持 PNG、JPG、BMP、GIF</div><button class="btn">选择图片</button></div></div>
         <div class="formrow"><button class="btn" style="width:100%">从剪贴板读取图片并识别</button></div>
         <div class="formrow"><label>默认加入</label><div class="field" style="display:flex;align-items:center">熬夜冠军</div></div>
-        <div class="pending-note">选择图片后，这里将显示图片预览、OCR 内容和关联成员选项。</div>
+        <div class="pending-note">文本和标签都可以留空；截图也可以直接加入图库。</div>
         <div class="actions"><button class="btn">加入待处理</button><button class="btn primary">加入当前图库</button></div>
       </section>
       <section class="panel" id="edit">
-        <div class="panel-header"><h2>编辑截图</h2><span class="muted">已选择 1 张</span></div>
-        <div class="edit-tip">点击昵称或消息气泡即可直接修改</div>
-        <div class="chat-editor">
-          <div class="chat-editor-head">识别结果<span class="small-action">重新 OCR</span></div>
-          <div class="chat-stream">
-            <div class="chat-message selected">
-              <div class="chat-avatar a1">熬</div>
-              <div class="chat-body"><div class="chat-speaker" contenteditable="true">熬夜冠军</div><br/><div class="chat-bubble" contenteditable="true">今晚打游戏吗？</div><div class="bubble-tools"><button class="bubble-tool">更换发言人</button><button class="bubble-tool">删除</button></div></div>
-            </div>
-            <div class="chat-message mine">
-              <div class="chat-avatar a2">红</div>
-              <div class="chat-body"><div class="chat-speaker" contenteditable="true">小红</div><br/><div class="chat-bubble" contenteditable="true">不行，我要加班。</div><div class="bubble-tools"><button class="bubble-tool">更换发言人</button><button class="bubble-tool">删除</button></div></div>
-            </div>
-            <div class="chat-message">
-              <div class="chat-avatar a1">熬</div>
-              <div class="chat-body"><div class="chat-speaker" contenteditable="true">熬夜冠军</div><br/><div class="chat-bubble" contenteditable="true">那我先睡一会。</div><div class="bubble-tools"><button class="bubble-tool">更换发言人</button><button class="bubble-tool">删除</button></div></div>
-            </div>
-          </div>
-          <button class="chat-add">＋ 添加一条消息</button>
-        </div>
+        <div class="panel-header"><h2>编辑截图</h2><span class="muted">文本和标签均可留空</span></div>
+        <div class="section text-section edit-text-section"><div class="section-title">可搜索文本（可选）</div><textarea class="search-textarea">今晚打游戏吗？</textarea></div>
+        <div class="section"><div class="section-title">标签（可选）</div><input class="keyword-input" value="名场面"/></div>
         <div class="actions"><button class="btn">取消</button><button class="btn primary">保存修改</button></div>
       </section>
     </aside>

@@ -218,23 +218,23 @@ public sealed class MainForm : Form
                     await SendStateAsync();
                     break;
                 case "chooseImage":
-                    await ChooseImageForDraftAsync();
+                    await ChooseImageForDraftAsync(ReadOptionalOcrEngine(payload), ReadGuid(payload, "libraryId"));
                     break;
                 case "prepareClipboard":
-                    await PrepareClipboardDraftAsync();
+                    await PrepareClipboardDraftAsync(ReadOptionalOcrEngine(payload));
                     break;
                 case "prepareDroppedImage":
-                    await PrepareDroppedDraftAsync(payload);
+                    await PrepareDroppedDraftAsync(payload, ReadOptionalOcrEngine(payload));
                     break;
                 case "prepareDroppedImages":
-                    await PrepareDroppedBatchAsync(payload);
+                    await PrepareDroppedBatchAsync(payload, ReadOptionalOcrEngine(payload), ReadGuid(payload, "libraryId"));
                     break;
                 case "cancelDraft":
                     _draft = null;
                     break;
                 case "commitDraft":
-                    await CommitDraftAsync(payload.GetProperty("pending").GetBoolean(), ReadGuid(payload, "personId"),
-                        ReadStringList(payload, "keywords"), ReadMessages(payload));
+                    await CommitDraftAsync(payload.GetProperty("pending").GetBoolean(), ReadGuid(payload, "libraryId"),
+                        ReadStringList(payload, "tags"), ReadText(payload, "searchText"));
                     break;
                 case "resolveDuplicate":
                     await ResolveDuplicateAsync(payload.GetProperty("action").GetString());
@@ -262,11 +262,7 @@ public sealed class MainForm : Form
                     await SendStateAsync("preview");
                     break;
                 case "rerunOcr":
-                    await RerunOcrAsync(ReadGuid(payload, "id"));
-                    break;
-                case "finishPending":
-                    FinishPending(ReadGuid(payload, "id"));
-                    await SendStateAsync("preview");
+                    await RerunOcrAsync(ReadGuid(payload, "id"), ReadOptionalOcrEngine(payload));
                     break;
                 case "windowAction":
                     HandleWindowAction(payload.GetProperty("action").GetString());
@@ -308,17 +304,10 @@ public sealed class MainForm : Form
                 needsReview = x.NeedsReview,
                 confidence = x.OcrConfidence,
                 ocrEngine = x.OcrEngine,
-                detectedNicknames = x.DetectedNicknames,
-                personIds = x.PersonIds,
-                messages = x.Messages.OrderBy(m => m.SortOrder).Select(m => new
-                {
-                    id = m.Id,
-                    sortOrder = m.SortOrder,
-                    personId = m.PersonId,
-                    detectedNickname = m.DetectedNickname,
-                    text = m.Text
-                }),
-                keywords = x.Keywords,
+                ocrEngineKey = x.OcrEngineKey,
+                libraryId = x.LibraryId,
+                searchText = x.SearchText,
+                tags = x.Tags,
                 imageUrl = $"https://images.quotevault.local/{Uri.EscapeDataString(x.StoredFileName)}"
             }),
             selectedPersonId = _selectedPersonId,
@@ -348,9 +337,10 @@ public sealed class MainForm : Form
     private Task ShowWebErrorAsync(string message) => InvokeWebAsync("showError", message);
     private Task SetWebBusyAsync(bool busy, string text) => InvokeWebAsync("setBusy", new object[] { busy, text });
 
-    private Task<OcrOutput> RecognizeAsync(string imagePath, CancellationToken cancellationToken = default)
+    private Task<OcrOutput> RecognizeAsync(string imagePath, string? engineOverride = null,
+        CancellationToken cancellationToken = default)
     {
-        return _store.State.Settings.OcrEngine switch
+        return (engineOverride ?? _store.State.Settings.OcrEngine) switch
         {
             "PaddleOcrV6" when _paddleOcr.IsFullyInstalled => _paddleOcr.RecognizeAsync(imagePath, cancellationToken),
             "PaddleOcrV6" => throw new InvalidOperationException("PaddleOCR 尚未安装，请先在设置中完成安装。"),
@@ -359,7 +349,7 @@ public sealed class MainForm : Form
         };
     }
 
-    private async Task ChooseImageForDraftAsync()
+    private async Task ChooseImageForDraftAsync(string? ocrEngine, Guid? libraryId)
     {
         using var dialog = new OpenFileDialog
         {
@@ -370,16 +360,17 @@ public sealed class MainForm : Form
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         if (dialog.FileNames.Length == 1)
         {
-            await PrepareDraftAsync(await File.ReadAllBytesAsync(dialog.FileName), Path.GetFileName(dialog.FileName), Path.GetExtension(dialog.FileName));
+            await PrepareDraftAsync(await File.ReadAllBytesAsync(dialog.FileName), Path.GetFileName(dialog.FileName),
+                Path.GetExtension(dialog.FileName), ocrEngine);
             return;
         }
         var files = new List<IncomingImage>();
         foreach (var file in dialog.FileNames)
             files.Add(new IncomingImage(await File.ReadAllBytesAsync(file), Path.GetFileName(file), Path.GetExtension(file)));
-        await ImportBatchToPendingAsync(files);
+        await ImportBatchToPendingAsync(files, ocrEngine, libraryId);
     }
 
-    private async Task PrepareClipboardDraftAsync()
+    private async Task PrepareClipboardDraftAsync(string? ocrEngine)
     {
         if (!Clipboard.ContainsImage())
         {
@@ -390,20 +381,20 @@ public sealed class MainForm : Form
         if (image is null) return;
         using var stream = new MemoryStream();
         image.Save(stream, ImageFormat.Png);
-        await PrepareDraftAsync(stream.ToArray(), $"剪贴板-{DateTime.Now:yyyyMMdd-HHmmss}.png", ".png");
+        await PrepareDraftAsync(stream.ToArray(), $"剪贴板-{DateTime.Now:yyyyMMdd-HHmmss}.png", ".png", ocrEngine);
     }
 
-    private async Task PrepareDroppedDraftAsync(JsonElement payload)
+    private async Task PrepareDroppedDraftAsync(JsonElement payload, string? ocrEngine)
     {
         var name = payload.GetProperty("name").GetString() ?? "拖入图片.png";
         var dataUrl = payload.GetProperty("dataUrl").GetString() ?? throw new InvalidDataException("拖入的图片为空。");
         var comma = dataUrl.IndexOf(',');
         if (comma < 0) throw new InvalidDataException("无法读取拖入的图片。");
         var bytes = Convert.FromBase64String(dataUrl[(comma + 1)..]);
-        await PrepareDraftAsync(bytes, name, Path.GetExtension(name));
+        await PrepareDraftAsync(bytes, name, Path.GetExtension(name), ocrEngine);
     }
 
-    private async Task PrepareDroppedBatchAsync(JsonElement payload)
+    private async Task PrepareDroppedBatchAsync(JsonElement payload, string? ocrEngine, Guid? libraryId)
     {
         var files = new List<IncomingImage>();
         foreach (var element in payload.GetProperty("items").EnumerateArray())
@@ -414,10 +405,10 @@ public sealed class MainForm : Form
             if (comma < 0) continue;
             files.Add(new IncomingImage(Convert.FromBase64String(dataUrl[(comma + 1)..]), name, Path.GetExtension(name)));
         }
-        await ImportBatchToPendingAsync(files);
+        await ImportBatchToPendingAsync(files, ocrEngine, libraryId);
     }
 
-    private async Task ImportBatchToPendingAsync(IReadOnlyList<IncomingImage> files)
+    private async Task ImportBatchToPendingAsync(IReadOnlyList<IncomingImage> files, string? ocrEngine, Guid? libraryId)
     {
         if (files.Count == 0) return;
         await SetWebBusyAsync(true, $"正在导入 {files.Count} 张截图…");
@@ -436,15 +427,19 @@ public sealed class MainForm : Form
             var extension = NormalizeExtension(file.Extension);
             var item = _store.AddImage(file.Bytes, file.Name, extension);
             item.NeedsReview = true;
+            if (libraryId.HasValue && _store.State.People.Any(x => x.Id == libraryId.Value))
+            {
+                item.LibraryId = libraryId;
+                item.PersonIds = [libraryId.Value];
+            }
             try
             {
-                var output = await RecognizeAsync(_store.GetImageFile(item));
+                var output = await RecognizeAsync(_store.GetImageFile(item), ocrEngine);
                 item.OcrRawText = output.RawText;
                 item.OcrConfidence = output.Confidence;
                 item.OcrEngine = output.Engine;
-                item.DetectedNicknames = output.NicknameCandidates.ToList();
-                item.Messages = CreateMessagesFromOcr(output);
-                AddMessagePeople(item);
+                item.OcrEngineKey = ocrEngine ?? _store.State.Settings.OcrEngine;
+                item.SearchText = SearchTextFromOcr(output);
             }
             catch
             {
@@ -455,24 +450,27 @@ public sealed class MainForm : Form
             imported++;
         }
         _draft = null;
+        _topView = "pending";
+        _selectedPersonId = null;
         await InvokeWebAsync("clearDraft");
-        await SendStateAsync();
+        await SendStateAsync("preview");
         await SetWebBusyAsync(false, string.Empty);
         if (imported > 0) await InvokeWebAsync("showError", $"已导入 {imported} 张截图，可在待处理中继续整理。");
         if (skippedDuplicates > 0) await InvokeWebAsync("showError", $"已跳过 {skippedDuplicates} 张重复图片。");
     }
 
-    private async Task PrepareDraftAsync(byte[] bytes, string name, string extension)
+    private async Task PrepareDraftAsync(byte[] bytes, string name, string extension, string? ocrEngine = null)
     {
         ValidateImage(bytes);
         extension = NormalizeExtension(extension);
         var temp = Path.Combine(Path.GetTempPath(), $"QuoteVault-{Guid.NewGuid():N}{extension}");
         try
         {
-            await SetWebBusyAsync(true, _store.State.Settings.OcrEngine == "None" ? "正在读取截图…" : "正在识别截图…");
+            var engineKey = ocrEngine ?? _store.State.Settings.OcrEngine;
+            await SetWebBusyAsync(true, engineKey == "None" ? "正在读取截图…" : "正在识别截图…");
             await File.WriteAllBytesAsync(temp, bytes);
-            var output = await RecognizeAsync(temp);
-            _draft = new ImportDraft(bytes, name, extension, output);
+            var output = await RecognizeAsync(temp, engineKey);
+            _draft = new ImportDraft(bytes, name, extension, output, engineKey);
             var dataUrl = $"data:{MimeForExtension(extension)};base64,{Convert.ToBase64String(bytes)}";
             await InvokeWebAsync("setDraft", new
             {
@@ -480,12 +478,8 @@ public sealed class MainForm : Form
                 dataUrl,
                 confidence = output.Confidence,
                 ocrEngine = output.Engine,
-                messages = output.Lines.Select((line, index) =>
-                {
-                    var detectedNickname = output.SpeakerNicknames?.ElementAtOrDefault(index);
-                    var personId = ResolveNickname(detectedNickname);
-                    return new { sortOrder = index, text = line, personId, detectedNickname };
-                })
+                ocrEngineKey = engineKey,
+                searchText = SearchTextFromOcr(output)
             });
         }
         finally
@@ -494,16 +488,16 @@ public sealed class MainForm : Form
         }
     }
 
-    private async Task CommitDraftAsync(bool pending, Guid? personId, IReadOnlyList<string> keywords,
-        IReadOnlyList<MessageItem> editedMessages, bool bypassDuplicateCheck = false)
+    private async Task CommitDraftAsync(bool pending, Guid? libraryId, IReadOnlyList<string> tags,
+        string searchText, bool bypassDuplicateCheck = false)
     {
         if (_draft is null) return;
         var hash = AppStore.ComputeSha256(_draft.Bytes);
         var duplicate = _store.FindDuplicate(hash);
         if (duplicate is not null && !bypassDuplicateCheck)
         {
-            _pendingDuplicateCommit = new PendingDuplicateCommit(pending, personId, keywords.ToList(),
-                editedMessages.Select(CloneMessage).ToList(), duplicate.Id);
+            _pendingDuplicateCommit = new PendingDuplicateCommit(pending, libraryId, tags.ToList(), searchText,
+                duplicate.Id);
             await InvokeWebAsync("showDuplicate", new { duplicate.OriginalFileName });
             return;
         }
@@ -512,23 +506,23 @@ public sealed class MainForm : Form
         item.OcrRawText = _draft.Ocr.RawText;
         item.OcrConfidence = _draft.Ocr.Confidence;
         item.OcrEngine = _draft.Ocr.Engine;
-        item.DetectedNicknames = _draft.Ocr.NicknameCandidates.ToList();
-        item.Messages = editedMessages.Count > 0
-            ? editedMessages.Select(CloneMessage).Where(x => !string.IsNullOrWhiteSpace(x.Text)).ToList()
-            : CreateMessagesFromOcr(_draft.Ocr);
+        item.OcrEngineKey = _draft.OcrEngineKey;
+        item.SearchText = NormalizeSearchText(searchText);
         item.NeedsReview = pending;
-        item.Keywords = NormalizeKeywords(keywords);
-        if (personId is Guid id && _store.State.People.Any(x => x.Id == id)) item.PersonIds.Add(id);
-        foreach (var speakerId in item.Messages.Select(x => x.PersonId).OfType<Guid>()
-                     .Where(id => _store.State.People.Any(person => person.Id == id)))
-            if (!item.PersonIds.Contains(speakerId)) item.PersonIds.Add(speakerId);
+        item.Tags = NormalizeTags(tags);
+        if (libraryId is Guid id && _store.State.People.Any(x => x.Id == id))
+        {
+            item.LibraryId = id;
+            item.PersonIds = [id];
+        }
         _store.Save();
 
         _selectedScreenshotId = item.Id;
-        _selectedPersonId = personId ?? _selectedPersonId;
+        _selectedPersonId = item.NeedsReview ? null : item.LibraryId ?? _selectedPersonId;
+        _topView = item.NeedsReview ? "pending" : "library";
         _draft = null;
         await InvokeWebAsync("clearDraft");
-        await SendStateAsync(item.NeedsReview ? "pending" : "preview");
+        await SendStateAsync("preview");
     }
 
     private async Task ResolveDuplicateAsync(string? action)
@@ -538,7 +532,7 @@ public sealed class MainForm : Form
         if (pending is null) return;
         if (action == "import")
         {
-            await CommitDraftAsync(pending.Pending, pending.PersonId, pending.Keywords, pending.Messages, true);
+            await CommitDraftAsync(pending.Pending, pending.LibraryId, pending.Tags, pending.SearchText, true);
             return;
         }
         if (action == "view")
@@ -546,10 +540,16 @@ public sealed class MainForm : Form
             var duplicate = _store.State.Screenshots.FirstOrDefault(x => x.Id == pending.DuplicateId);
             if (duplicate is not null)
             {
-                _selectedScreenshotId = duplicate.Id;
+                if (duplicate.DeletedAt.HasValue)
+                {
+                    _selectedScreenshotId = duplicate.Id;
+                    _selectedPersonId = null;
+                    _topView = "trash";
+                }
+                else SelectGlobalScreenshot(duplicate.Id);
                 _draft = null;
                 await InvokeWebAsync("clearDraft");
-                await SendStateAsync(duplicate.NeedsReview ? "pending" : "preview");
+                await SendStateAsync("preview");
             }
             return;
         }
@@ -561,56 +561,36 @@ public sealed class MainForm : Form
     {
         var id = ReadGuid(payload, "id") ?? throw new InvalidDataException("没有选择截图。");
         var item = _store.State.Screenshots.FirstOrDefault(x => x.Id == id) ?? throw new FileNotFoundException("截图不存在。");
-        var messages = new List<MessageItem>();
-        foreach (var element in payload.GetProperty("messages").EnumerateArray())
+        item.SearchText = NormalizeSearchText(ReadText(payload, "searchText"));
+        item.Tags = NormalizeTags(ReadStringList(payload, "tags"));
+        var libraryId = ReadGuid(payload, "libraryId") ?? item.LibraryId ?? _selectedPersonId;
+        if (_topView == "pending" && (!libraryId.HasValue || !_store.State.People.Any(x => x.Id == libraryId.Value)))
+            throw new InvalidOperationException("请选择要存放截图的图库。");
+        if (libraryId.HasValue && _store.State.People.Any(x => x.Id == libraryId.Value))
         {
-            messages.Add(new MessageItem
-            {
-                Id = ReadGuid(element, "id") ?? Guid.NewGuid(),
-                SortOrder = element.GetProperty("sortOrder").GetInt32(),
-                PersonId = ReadGuid(element, "personId"),
-                Text = element.GetProperty("text").GetString()?.Trim() ?? string.Empty
-            });
+            item.LibraryId = libraryId;
+            item.PersonIds = [libraryId.Value];
+            _selectedPersonId = libraryId;
         }
-        item.Messages = messages.Where(x => !string.IsNullOrWhiteSpace(x.Text)).OrderBy(x => x.SortOrder).ToList();
-        item.PersonIds = payload.GetProperty("personIds").EnumerateArray()
-            .Select(x => Guid.TryParse(x.GetString(), out var parsed) ? parsed : Guid.Empty)
-            .Where(x => x != Guid.Empty && _store.State.People.Any(p => p.Id == x)).Distinct().ToList();
-        if (_selectedPersonId is Guid current && !item.PersonIds.Contains(current)) item.PersonIds.Add(current);
-        if (_topView == "pending" && item.PersonIds.Count == 0)
-            throw new InvalidOperationException("完成待处理截图前，请至少为一条消息选择发言人。");
-        item.Keywords = NormalizeKeywords(ReadStringList(payload, "keywords"));
         item.NeedsReview = false;
+        if (_topView == "pending") _topView = "library";
         _store.Save();
     }
 
-    private async Task RerunOcrAsync(Guid? id)
+    private async Task RerunOcrAsync(Guid? id, string? ocrEngine = null)
     {
         var item = _store.State.Screenshots.FirstOrDefault(x => x.Id == id) ?? throw new FileNotFoundException("截图不存在。");
-        await SetWebBusyAsync(true, _store.State.Settings.OcrEngine == "None" ? "正在关闭当前截图的 OCR…" : "正在重新识别…");
-        var output = await RecognizeAsync(_store.GetImageFile(item));
+        var engineKey = ocrEngine ?? _store.State.Settings.OcrEngine;
+        await SetWebBusyAsync(true, engineKey == "None" ? "正在清除当前截图的识别文本…" : "正在重新识别…");
+        var output = await RecognizeAsync(_store.GetImageFile(item), engineKey);
         item.OcrRawText = output.RawText;
         item.OcrConfidence = output.Confidence;
         item.OcrEngine = output.Engine;
-        item.DetectedNicknames = output.NicknameCandidates.ToList();
-        item.Messages = CreateMessagesFromOcr(output);
-        AddMessagePeople(item);
+        item.OcrEngineKey = engineKey;
+        item.SearchText = SearchTextFromOcr(output);
         _store.Save();
         await SendStateAsync();
         await SetWebBusyAsync(false, string.Empty);
-    }
-
-    private void FinishPending(Guid? id)
-    {
-        var item = _store.State.Screenshots.FirstOrDefault(x => x.Id == id) ?? throw new FileNotFoundException("截图不存在。");
-        if (item.PersonIds.Count == 0 && _selectedPersonId is Guid personId) item.PersonIds.Add(personId);
-        if (item.PersonIds.Count == 0)
-            throw new InvalidOperationException("请先在“编辑”中为截图关联至少一位成员。");
-        item.NeedsReview = false;
-        _store.Save();
-        _selectedScreenshotId = _store.State.Screenshots
-            .Where(x => !x.DeletedAt.HasValue && x.NeedsReview && x.Id != item.Id)
-            .OrderByDescending(x => x.ImportedAt).Select(x => (Guid?)x.Id).FirstOrDefault();
     }
 
     private void CopyImage(Guid? id)
@@ -640,6 +620,11 @@ public sealed class MainForm : Form
     {
         var item = _store.State.Screenshots.FirstOrDefault(x => x.Id == id) ?? throw new FileNotFoundException("截图不存在。");
         _store.RestoreFromTrash(item);
+        if (!item.LibraryId.HasValue)
+        {
+            item.NeedsReview = true;
+            _store.Save();
+        }
         _selectedScreenshotId = null;
     }
 
@@ -710,8 +695,10 @@ public sealed class MainForm : Form
         if (member is null) return;
         foreach (var screenshot in _store.State.Screenshots)
         {
-            screenshot.PersonIds.Remove(member.Id);
-            foreach (var message in screenshot.Messages.Where(x => x.PersonId == member.Id)) message.PersonId = null;
+            if (screenshot.LibraryId != member.Id) continue;
+            screenshot.LibraryId = null;
+            screenshot.PersonIds.Clear();
+            screenshot.NeedsReview = true;
         }
         _store.State.NicknameMappings.RemoveAll(x => x.PersonId == member.Id);
         _store.State.People.Remove(member);
@@ -735,14 +722,14 @@ public sealed class MainForm : Form
     private void MoveScreenshots(JsonElement payload)
     {
         var targetMemberId = ReadGuid(payload, "targetMemberId") ?? throw new InvalidDataException("没有选择目标图库。");
-        var sourceMemberId = ReadGuid(payload, "sourceMemberId");
         if (!_store.State.People.Any(x => x.Id == targetMemberId)) throw new InvalidDataException("目标成员不存在。");
         var ids = ReadStringList(payload, "ids").Select(x => Guid.TryParse(x, out var id) ? id : Guid.Empty)
             .Where(x => x != Guid.Empty).ToHashSet();
         foreach (var item in _store.State.Screenshots.Where(x => ids.Contains(x.Id) && !x.DeletedAt.HasValue))
         {
-            if (sourceMemberId.HasValue && sourceMemberId != targetMemberId) item.PersonIds.Remove(sourceMemberId.Value);
-            if (!item.PersonIds.Contains(targetMemberId)) item.PersonIds.Add(targetMemberId);
+            item.LibraryId = targetMemberId;
+            item.PersonIds = [targetMemberId];
+            item.NeedsReview = false;
         }
         _selectedPersonId = targetMemberId;
         _selectedScreenshotId = ids.Count == 1 ? ids.First() : null;
@@ -755,7 +742,7 @@ public sealed class MainForm : Form
         var item = _store.State.Screenshots.FirstOrDefault(x => x.Id == id && !x.DeletedAt.HasValue) ??
                    throw new FileNotFoundException("截图不存在。");
         _selectedScreenshotId = item.Id;
-        _selectedPersonId = item.PersonIds.FirstOrDefault() is var personId && personId != Guid.Empty ? personId : null;
+        _selectedPersonId = item.LibraryId;
         _topView = item.NeedsReview ? "pending" : "library";
     }
 
@@ -765,30 +752,8 @@ public sealed class MainForm : Form
             .Where(id => id != Guid.Empty && _store.State.Categories.Any(x => x.Id == id))
             .Distinct().ToList();
 
-    private List<MessageItem> CreateMessagesFromOcr(OcrOutput output) =>
-        output.Lines.Select((line, index) => new MessageItem
-        {
-            SortOrder = index,
-            Text = line,
-            PersonId = ResolveNickname(output.SpeakerNicknames?.ElementAtOrDefault(index)),
-            DetectedNickname = output.SpeakerNicknames?.ElementAtOrDefault(index)
-        }).ToList();
-
-    private Guid? ResolveNickname(string? nickname)
-    {
-        if (string.IsNullOrWhiteSpace(nickname)) return null;
-        var mapping = _store.State.NicknameMappings.FirstOrDefault(x =>
-            string.Equals(x.Nickname, nickname, StringComparison.OrdinalIgnoreCase));
-        if (mapping is not null && _store.State.People.Any(x => x.Id == mapping.PersonId)) return mapping.PersonId;
-        return _store.State.People.FirstOrDefault(x =>
-            string.Equals(x.DisplayName, nickname, StringComparison.OrdinalIgnoreCase))?.Id;
-    }
-
-    private void AddMessagePeople(ScreenshotItem item)
-    {
-        foreach (var personId in item.Messages.Select(x => x.PersonId).OfType<Guid>().Distinct())
-            if (!item.PersonIds.Contains(personId)) item.PersonIds.Add(personId);
-    }
+    private static string SearchTextFromOcr(OcrOutput output) => NormalizeSearchText(
+        string.Join(Environment.NewLine, output.Lines.Where(x => !string.IsNullOrWhiteSpace(x))));
 
     private void SaveHotKeySettings(JsonElement payload)
     {
@@ -808,8 +773,9 @@ public sealed class MainForm : Form
         var engine = ReadOcrEngine(payload);
         if (engine == "PaddleOcrV6" && !_paddleOcr.IsFullyInstalled)
             throw new InvalidOperationException("PaddleOCR 尚未安装。选择安装后才能启用该识别引擎。");
-        SaveOcrEngine(engine);
-        await CompleteOcrEngineChangeAsync(payload);
+        var target = payload.TryGetProperty("target", out var targetValue) ? targetValue.GetString() : "settings";
+        if (target == "settings") SaveOcrEngine(engine);
+        await CompleteOcrEngineChangeAsync(payload, engine);
     }
 
     private void SaveOcrEngine(string engine)
@@ -824,19 +790,18 @@ public sealed class MainForm : Form
             ? engine.GetString()!
             : "None";
 
-    private async Task CompleteOcrEngineChangeAsync(JsonElement payload)
+    private async Task CompleteOcrEngineChangeAsync(JsonElement payload, string engine)
     {
         var target = payload.TryGetProperty("target", out var targetValue) ? targetValue.GetString() : null;
         if (target == "draft" && _draft is not null)
         {
             var draft = _draft;
-            await SendStateAsync();
-            await PrepareDraftAsync(draft.Bytes, draft.Name, draft.Extension);
+            await PrepareDraftAsync(draft.Bytes, draft.Name, draft.Extension, engine);
             return;
         }
         if (target == "edit")
         {
-            await RerunOcrAsync(ReadGuid(payload, "id"));
+            await RerunOcrAsync(ReadGuid(payload, "id"), engine);
             return;
         }
         await SendStateAsync();
@@ -876,8 +841,9 @@ public sealed class MainForm : Form
         if (!_paddleOcr.IsFullyInstalled)
             throw new InvalidOperationException("安装程序已结束，但 PaddleOCR 运行环境或模型不完整。");
 
-        SaveOcrEngine("PaddleOcrV6");
-        await CompleteOcrEngineChangeAsync(payload);
+        var target = payload.TryGetProperty("target", out var targetValue) ? targetValue.GetString() : "settings";
+        if (target == "settings") SaveOcrEngine("PaddleOcrV6");
+        await CompleteOcrEngineChangeAsync(payload, "PaddleOcrV6");
         await SetWebBusyAsync(false, string.Empty);
         await ShowWebErrorAsync("PaddleOCR 已安装并启用。");
     }
@@ -912,7 +878,11 @@ public sealed class MainForm : Form
                 item.DeletedAt = null;
                 item.NeedsReview = true;
             }
-            else if (action == "restore") _store.RestoreFromTrash(item);
+            else if (action == "restore")
+            {
+                _store.RestoreFromTrash(item);
+                if (!item.LibraryId.HasValue) item.NeedsReview = true;
+            }
             else if (action == "deleteForever") _store.PermanentlyDelete(item);
         }
         _store.Save();
@@ -928,7 +898,7 @@ public sealed class MainForm : Form
             "trash" => item.DeletedAt.HasValue,
             "pending" => !item.DeletedAt.HasValue && item.NeedsReview,
             "library" => _selectedPersonId.HasValue && !item.DeletedAt.HasValue && !item.NeedsReview &&
-                         item.PersonIds.Contains(_selectedPersonId.Value),
+                         item.LibraryId == _selectedPersonId.Value,
             _ => false
         });
         if (!valid) _selectedScreenshotId = null;
@@ -949,9 +919,8 @@ public sealed class MainForm : Form
             item.OcrRawText = output.RawText;
             item.OcrConfidence = output.Confidence;
             item.OcrEngine = output.Engine;
-            item.DetectedNicknames = output.NicknameCandidates.ToList();
-            item.Messages = CreateMessagesFromOcr(output);
-            AddMessagePeople(item);
+            item.OcrEngineKey = _store.State.Settings.OcrEngine;
+            item.SearchText = SearchTextFromOcr(output);
         }
         catch (Exception ex)
         {
@@ -963,7 +932,9 @@ public sealed class MainForm : Form
             _store.Save();
         }
         _selectedScreenshotId = item.Id;
-        await SendStateAsync("pending");
+        _selectedPersonId = null;
+        _topView = "pending";
+        await SendStateAsync("preview");
     }
 
     private void RegisterConfiguredHotKey()
@@ -1051,32 +1022,21 @@ public sealed class MainForm : Form
             .Select(x => x.GetString() ?? string.Empty).ToList();
     }
 
-    private static List<MessageItem> ReadMessages(JsonElement payload)
+    private static string ReadText(JsonElement element, string property) =>
+        element.ValueKind != JsonValueKind.Undefined && element.TryGetProperty(property, out var value) &&
+        value.ValueKind == JsonValueKind.String ? value.GetString() ?? string.Empty : string.Empty;
+
+    private static string? ReadOptionalOcrEngine(JsonElement payload)
     {
-        if (payload.ValueKind == JsonValueKind.Undefined || !payload.TryGetProperty("messages", out var value) ||
-            value.ValueKind != JsonValueKind.Array) return [];
-        return value.EnumerateArray().Select((element, index) => new MessageItem
-        {
-            Id = ReadGuid(element, "id") ?? Guid.NewGuid(),
-            SortOrder = index,
-            PersonId = ReadGuid(element, "personId"),
-            DetectedNickname = element.TryGetProperty("detectedNickname", out var nickname)
-                ? nickname.GetString()?.Trim()
-                : null,
-            Text = element.TryGetProperty("text", out var text) ? text.GetString()?.Trim() ?? string.Empty : string.Empty
-        }).Where(x => !string.IsNullOrWhiteSpace(x.Text)).ToList();
+        if (payload.ValueKind == JsonValueKind.Undefined || !payload.TryGetProperty("engine", out var value)) return null;
+        return value.GetString() is "PaddleOcrV6" or "Tesseract" or "None" ? value.GetString() : null;
     }
 
-    private static MessageItem CloneMessage(MessageItem source) => new()
-    {
-        Id = source.Id,
-        SortOrder = source.SortOrder,
-        PersonId = source.PersonId,
-        DetectedNickname = source.DetectedNickname,
-        Text = source.Text
-    };
+    private static string NormalizeSearchText(string? value) =>
+        string.Join(Environment.NewLine, (value ?? string.Empty).Replace("\r\n", "\n").Replace('\r', '\n')
+            .Split('\n').Select(x => x.TrimEnd())).Trim();
 
-    private static List<string> NormalizeKeywords(IEnumerable<string> values) => values
+    private static List<string> NormalizeTags(IEnumerable<string> values) => values
         .SelectMany(x => x.Split([',', '，', ';', '；'], StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
         .Where(x => x.Length <= 40).Distinct(StringComparer.OrdinalIgnoreCase).Take(30).ToList();
 
@@ -1106,8 +1066,8 @@ public sealed class MainForm : Form
     [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr hWnd, int msg, int wParam, int lParam);
     [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(IntPtr hWnd, int attribute, ref int value, int size);
 
-    private sealed record ImportDraft(byte[] Bytes, string Name, string Extension, OcrOutput Ocr);
+    private sealed record ImportDraft(byte[] Bytes, string Name, string Extension, OcrOutput Ocr, string OcrEngineKey);
     private sealed record IncomingImage(byte[] Bytes, string Name, string Extension);
-    private sealed record PendingDuplicateCommit(bool Pending, Guid? PersonId, List<string> Keywords,
-        List<MessageItem> Messages, Guid DuplicateId);
+    private sealed record PendingDuplicateCommit(bool Pending, Guid? LibraryId, List<string> Tags,
+        string SearchText, Guid DuplicateId);
 }

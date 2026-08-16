@@ -107,8 +107,23 @@ def _group_lines(image_path, texts, scores, boxes):
             )
 
         lines.sort(key=lambda item: (item["box"][1], item["box"][0]))
+        # QQ 的昵称、等级徽章经常被 OCR 拆成多个并排文本框。只把含 LV/等级的整行
+        # 当作界面元数据过滤掉，不返回昵称，也不尝试把它映射为成员身份。
+        level_lines = [line for line in lines if _looks_like_level(line["text"])]
+
+        def same_visual_row(left, right):
+            left_height = max(1, left["box"][3] - left["box"][1])
+            right_height = max(1, right["box"][3] - right["box"][1])
+            left_center = (left["box"][1] + left["box"][3]) / 2
+            right_center = (right["box"][1] + right["box"][3]) / 2
+            return abs(left_center - right_center) <= max(left_height, right_height) * 0.8
+
+        content_regions = [
+            line for line in lines
+            if not any(same_visual_row(line, level) for level in level_lines)
+        ]
         blocks = []
-        for line in lines:
+        for line in content_regions:
             if not blocks:
                 blocks.append([line])
                 continue
@@ -148,10 +163,11 @@ def _group_lines(image_path, texts, scores, boxes):
             messages.append(text)
             message_details.append({"text": text, "nickname": current_nickname})
 
-    if not messages and lines:
-        messages = ["\n".join(line["text"] for line in lines)]
+    if not messages and content_regions:
+        messages = ["\n".join(line["text"] for line in content_regions)]
         message_details = [{"text": messages[0], "nickname": None}]
-    return lines, messages, message_details, list(dict.fromkeys(nicknames))[:12]
+    # 昵称/等级只作为版面噪声过滤，不作为产品数据返回或建立身份关联。
+    return lines, messages, [{"text": item["text"], "nickname": None} for item in message_details], []
 
 
 def _recognize(engine, image_path):

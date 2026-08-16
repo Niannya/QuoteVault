@@ -15,6 +15,11 @@
   let editDirty = false;
   let windowState = 'normal';
   let dragPayload = null;
+  let nextImportOcrEngine = null;
+  let pendingTargetLibraryId = null;
+  let editTargetScreenshotId = null;
+  let editDraftTags = null;
+  let editDraftSearchText = null;
   const ungroupedKey = '__ungrouped__';
 
   const $ = id => document.getElementById(id);
@@ -25,12 +30,12 @@
     if(!shot)return null;
     if(state.topView==='trash')return shot.deletedAt?shot:null;
     if(state.topView==='pending')return !shot.deletedAt&&shot.needsReview?shot:null;
-    if(state.topView==='library')return state.selectedPersonId&&!shot.deletedAt&&!shot.needsReview&&shot.personIds.includes(state.selectedPersonId)?shot:null;
+    if(state.topView==='library')return state.selectedPersonId&&!shot.deletedAt&&!shot.needsReview&&shot.libraryId===state.selectedPersonId?shot:null;
     return null;
   };
   const memberById = id => state.people.find(x => x.id === id);
   const selectedMember = () => memberById(state.selectedPersonId);
-  const screenshotMembers = shot => (shot?.personIds ?? []).map(memberById).filter(Boolean);
+  const screenshotLibrary = shot => memberById(shot?.libraryId);
   const keywords = value => String(value ?? '').split(/[,，;；]/).map(x => x.trim()).filter(Boolean);
   const fmtDate = value => {
     const d = new Date(value);
@@ -44,9 +49,9 @@
     $('batchMode')?.classList.remove('active');
   }
 
-  function matchesScreenshot(shot, query) {
+  function matchesScreenshot(shot, query, includeLibrary = false) {
     if (!query) return true;
-    const haystack = `${shot.originalFileName}\n${shot.messages.map(m=>m.text).join('\n')}\n${screenshotMembers(shot).map(p=>p.displayName).join('\n')}\n${(shot.keywords||[]).join('\n')}`;
+    const haystack = `${shot.originalFileName}\n${shot.searchText||''}\n${(shot.tags||[]).join('\n')}${includeLibrary?`\n${screenshotLibrary(shot)?.displayName||''}`:''}`;
     return haystack.toLocaleLowerCase().includes(query.toLocaleLowerCase());
   }
 
@@ -148,7 +153,7 @@
         askConfirm('安装 PaddleOCR','PaddleOCR 运行环境和识别模型尚未安装。下载后预计占用约 900 MB，文件保存在本机。是否现在下载安装？',()=>{onAccepted?.();post('installPaddleOcr',payload);},false,'安装并启用');
       } else {onAccepted?.();post('setOcrEngine',payload);}
     };
-    if(confirmOverwrite) askConfirm('重新识别截图','切换识别方式会重新识别当前截图，并替换尚未保存的消息内容。是否继续？',apply,false,'切换并识别');
+    if(confirmOverwrite) askConfirm('重新识别截图','切换识别方式会重新识别当前截图，并替换当前的可搜索文本。是否继续？',apply,false,'切换并识别');
     else apply();
   }
 
@@ -202,7 +207,7 @@
     const host = $('peopleTree');
     const query = $('sideSearch').value.trim().toLocaleLowerCase();
     const personHtml = (person, sourceGroupId = '') => {
-      const count = state.screenshots.filter(x => !x.deletedAt && !x.needsReview && x.personIds.includes(person.id)).length;
+      const count = state.screenshots.filter(x => !x.deletedAt && !x.needsReview && x.libraryId===person.id).length;
       const palette = ['a1','a2','a3','a4','a5']; const cls = palette[Math.abs(hash(person.id)) % palette.length];
       return `<div class="friend ${state.selectedPersonId === person.id && state.topView === 'library' ? 'active' : ''}" draggable="true" data-person="${person.id}" data-source-group="${sourceGroupId}"><span class="avatar ${cls}">${esc(person.displayName.slice(0,1) || '?')}</span><span>${esc(person.displayName)}</span><span class="count">${count}</span></div>`;
     };
@@ -220,8 +225,8 @@
     const ungrouped = state.people.filter(x => !x.categoryIds.length && (!query || x.displayName.toLocaleLowerCase().includes(query)));
     const ungroupedCollapsed = collapsedGroups.has(ungroupedKey);
     const other = ungrouped.length ? `<div class="group" data-group-wrap="${ungroupedKey}"><div class="group-title" data-ungrouped><span class="chev">${ungroupedCollapsed?'▶':'▼'}</span>未分组</div><div class="group-content ${ungroupedCollapsed?'hidden':''}">${ungrouped.map(x=>personHtml(x,'')).join('')}</div></div>` : '';
-    const globalMatches = query ? state.screenshots.filter(x=>!x.deletedAt && matchesScreenshot(x,query)).slice(0,8) : [];
-    const global = query ? `<div class="global-results"><div class="global-results-title">全局截图 · ${globalMatches.length}${globalMatches.length===8?'＋':''}</div>${globalMatches.map(shot=>`<button class="global-shot" data-global-shot="${shot.id}"><b>${esc(shot.messages.find(x=>x.text)?.text||shot.originalFileName)}</b><span>${esc(screenshotMembers(shot).map(x=>x.displayName).join('、')|| (shot.needsReview?'待处理':'未关联成员'))}</span></button>`).join('')||'<div class="muted" style="padding:8px">未找到匹配截图</div>'}</div>` : '';
+    const globalMatches = query ? state.screenshots.filter(x=>!x.deletedAt && matchesScreenshot(x,query,true)).slice(0,8) : [];
+    const global = query ? `<div class="global-results"><div class="global-results-title">全局截图 · ${globalMatches.length}${globalMatches.length===8?'＋':''}</div>${globalMatches.map(shot=>`<button class="global-shot" data-global-shot="${shot.id}"><b>${esc((shot.searchText||'').split('\n').find(Boolean)||shot.originalFileName)}</b><span>${esc(screenshotLibrary(shot)?.displayName||(shot.needsReview?'待处理':'未选择图库'))}</span></button>`).join('')||'<div class="muted" style="padding:8px">未找到匹配截图</div>'}</div>` : '';
     host.innerHTML = (roots + other || (!query?'<div class="muted" style="padding:14px 9px">尚未创建成员</div>':'')) + global;
     host.querySelector('[data-ungrouped]')?.addEventListener('click',()=>{collapsedGroups.has(ungroupedKey)?collapsedGroups.delete(ungroupedKey):collapsedGroups.add(ungroupedKey);renderTree();});
     host.querySelectorAll('[data-global-shot]').forEach(node=>node.onclick=()=>{resetSelectionMode();post('selectGlobalScreenshot',{id:node.dataset.globalShot});});
@@ -229,7 +234,7 @@
       node.addEventListener('click', () => {resetSelectionMode();post('selectPerson', { id: node.dataset.person });});
       node.addEventListener('contextmenu', e => { e.preventDefault(); const member = memberById(node.dataset.person); showMenu(e.clientX,e.clientY,[
         { label:'编辑成员与群组', action:()=>openMemberModal(member) }, { separator:true },
-        { label:'删除成员', danger:true, action:()=>askConfirm('删除成员',`删除“${member.displayName}”？截图不会被删除，但会解除关联。`,()=>post('deleteMember',{id:member.id}),true) }
+        { label:'删除成员', danger:true, action:()=>askConfirm('删除成员',`删除“${member.displayName}”？其中的截图不会被删除，而会转入待处理。`,()=>post('deleteMember',{id:member.id}),true) }
       ]); });
       node.addEventListener('dragstart',e=>{dragPayload={kind:'member',memberId:node.dataset.person,sourceGroupId:node.dataset.sourceGroup||null};e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',JSON.stringify(dragPayload));});
       node.addEventListener('dragend',()=>{dragPayload=null;document.querySelectorAll('.drag-over').forEach(x=>x.classList.remove('drag-over'));});
@@ -256,7 +261,7 @@
     let items = state.screenshots;
     if (state.topView === 'trash') items = items.filter(x => !!x.deletedAt);
     else if (state.topView === 'pending') items = items.filter(x => !x.deletedAt && x.needsReview);
-    else if (state.selectedPersonId) items = items.filter(x => !x.deletedAt && !x.needsReview && x.personIds.includes(state.selectedPersonId));
+    else if (state.selectedPersonId) items = items.filter(x => !x.deletedAt && !x.needsReview && x.libraryId===state.selectedPersonId);
     else items = [];
     const query = $('centerSearch').value.trim().toLocaleLowerCase();
     if (query) items = items.filter(x => matchesScreenshot(x, query));
@@ -319,7 +324,7 @@
     const title = state.topView === 'trash' ? '回收站' : state.topView === 'pending' ? '待处理图库' : selectedMember()?.displayName ?? '选择一个成员图库';
     $('libraryTitle').textContent=title;
     $('librarySub').textContent=state.topView==='trash'?`${items.length} 张已删除截图`:state.topView==='pending'?`${items.length} 张等待整理`:state.selectedPersonId?`${items.length} 张截图`:'';
-    $('centerSearch').placeholder=state.topView==='trash'?'搜索回收站中的截图':state.topView==='pending'?'搜索待处理截图':'搜索当前图库中的消息、成员或关键词';
+    $('centerSearch').placeholder=state.topView==='trash'?'搜索回收站中的文本或标签':state.topView==='pending'?'搜索待处理截图':'搜索当前图库中的文本或标签';
     const host=$('cards'); host.classList.toggle('list',viewMode==='list'); host.classList.toggle('selection-mode',selectionMode);
     if(!state.selectedPersonId && state.topView!=='pending' && state.topView!=='trash') {
       host.innerHTML=`<div class="empty-state" style="grid-column:1/-1"><div><h2>选择一个成员图库</h2><p>从左侧选择成员，或新建群组与成员。</p><button class="btn primary" id="emptyCreate">新建成员图库</button></div></div>`;
@@ -333,10 +338,11 @@
       $('emptyClearSearch') && ($('emptyClearSearch').onclick=()=>{$('centerSearch').value='';updateSearchClear('center');renderCenter();});return;
     }
     host.innerHTML=items.map(shot=>{
-      const members=screenshotMembers(shot).map(x=>x.displayName).join('、')||'未关联成员';
-      const snippet=shot.messages.find(x=>x.text.trim())?.text||'尚未识别文字';
-      const detail=shot.messages.slice(0,3).map(m=>m.text).join(' · ');
-      return `<article class="card ${shot.id===state.selectedScreenshotId?'selected':''} ${selectedIds.has(shot.id)?'batch-selected':''}" draggable="${state.topView==='library'}" data-shot="${shot.id}"><span class="select-dot">${checkSvg}</span><button class="card-more" data-more="${shot.id}" title="更多操作" aria-label="更多操作">${moreSvg}</button><div class="thumb"><img class="real-image" src="${esc(shot.imageUrl)}" alt="截图"/></div><div class="cardline"><span class="snippet">${esc(snippet)}</span><span class="date">${fmtDate(shot.importedAt)}</span></div><div class="mini">${esc(members)} · ${shot.messages.length} 条消息${shot.needsReview?' · 待整理':''}${shot.keywords?.length?' · #'+esc(shot.keywords.join(' #')):''}</div><div class="card-details">${esc(detail)}</div></article>`;
+      const library=screenshotLibrary(shot)?.displayName||(shot.needsReview?'待处理':'未选择图库');
+      const lines=(shot.searchText||'').split('\n').map(x=>x.trim()).filter(Boolean);
+      const snippet=lines[0]||'未填写可搜索文本';
+      const detail=lines.slice(0,4).join(' · ');
+      return `<article class="card ${shot.id===state.selectedScreenshotId?'selected':''} ${selectedIds.has(shot.id)?'batch-selected':''}" draggable="${state.topView==='library'}" data-shot="${shot.id}"><span class="select-dot">${checkSvg}</span><button class="card-more" data-more="${shot.id}" title="更多操作" aria-label="更多操作">${moreSvg}</button><div class="thumb"><img class="real-image" src="${esc(shot.imageUrl)}" alt="截图"/></div><div class="cardline"><span class="snippet">${esc(snippet)}</span><span class="date">${fmtDate(shot.importedAt)}</span></div><div class="mini">${esc(library)}${shot.needsReview?' · 待整理':''}${shot.tags?.length?' · #'+esc(shot.tags.join(' #')):''}</div><div class="card-details">${esc(detail)}</div></article>`;
     }).join('');
     host.querySelectorAll('[data-shot]').forEach(card=>{
       card.onclick=e=>{if(e.target.closest('[data-more]'))return;if(selectionMode){selectedIds.has(card.dataset.shot)?selectedIds.delete(card.dataset.shot):selectedIds.add(card.dataset.shot);renderCenter();}else post('selectScreenshot',{id:card.dataset.shot});};
@@ -353,7 +359,7 @@
     showMenu(x,y,shot.deletedAt?[
       {label:'恢复到图库',action:()=>post('restoreFromTrash',{id})},{separator:true},{label:'永久删除',danger:true,action:()=>askConfirm('永久删除','删除后无法恢复，确定继续？',()=>post('permanentDelete',{id}),true)}
     ]:shot.needsReview?[
-      {label:'继续编辑',action:()=>{state.selectedScreenshotId=id;setActivePanel('edit',true)}},{label:'完成整理',action:()=>post('finishPending',{id})},{separator:true},{label:'移到回收站',danger:true,action:()=>post('moveToTrash',{id})}
+      {label:'继续处理',action:()=>{state.selectedScreenshotId=id;setActivePanel('edit',true)}},{separator:true},{label:'移到回收站',danger:true,action:()=>post('moveToTrash',{id})}
     ]:[
       {label:'复制到剪贴板',action:()=>post('copyImage',{id})},{label:'移动到其他图库…',action:()=>openMoveScreenshotsModal([id])},{label:'在资源管理器中显示',action:()=>post('showFile',{id})},{separator:true},{label:'移到回收站',danger:true,action:()=>post('moveToTrash',{id})}
     ]);
@@ -366,7 +372,7 @@
     const grouped=state.categories.filter(x=>!x.parentId).map(x=>groupBlock(x)).join('');
     const ungrouped=available.filter(p=>!p.categoryIds.length).map(p=>memberButton(p)).join('');
     const picker=grouped+(ungrouped?`<div class="library-group"><div class="library-group-title">未分组</div>${ungrouped}</div>`:'');
-    modal(`<h2>移动到其他图库</h2><p>所选截图将从当前成员图库移动到目标成员图库。</p><div class="modal-field"><label>目标成员图库</label><div class="library-picker" id="movePicker">${picker||'<div class="picker-empty">没有可用的目标图库</div>'}</div></div><div class="modal-actions"><button class="btn" data-cancel>取消</button><button class="btn primary" data-move disabled>移动</button></div>`,layer=>{
+    modal(`<h2>移动到其他图库</h2><p>所选截图将从当前图库移动到目标图库。</p><div class="modal-field"><label>目标成员图库</label><div class="library-picker" id="movePicker">${picker||'<div class="picker-empty">没有可用的目标图库</div>'}</div></div><div class="modal-actions"><button class="btn" data-cancel>取消</button><button class="btn primary" data-move disabled>移动</button></div>`,layer=>{
       let target=null;const move=layer.querySelector('[data-move]');
       layer.querySelectorAll('[data-library]').forEach(button=>button.onclick=()=>{target=button.dataset.library;layer.querySelectorAll('[data-library]').forEach(x=>x.classList.toggle('active',x===button));move.disabled=false;});
       move.onclick=()=>{if(!target)return;layer.remove();post('moveScreenshots',{ids,sourceMemberId:state.selectedPersonId,targetMemberId:target});resetSelectionMode();};
@@ -393,61 +399,66 @@
 
   function renderPreview(){
     const host=$('preview'),shot=selectedScreenshot();
-    if(!shot){emptyPanel(host,state.topView==='trash'?'选择回收站中的截图':state.topView==='pending'?'选择一张待处理截图':'选择一张截图',state.topView==='trash'?'选择后可以还原或永久删除。':state.topView==='pending'?'选择后可以继续编辑或完成整理。':'选择后可查看大图、消息内容并复制原图。');return;}
-    const members=screenshotMembers(shot), messages=shot.messages.map(m=>`<div><span class="msg-person">${esc(memberById(m.personId)?.displayName||'未指定')}</span>${esc(m.text)}</div>`).join('')||'<span class="muted">尚未识别到消息</span>';
-    const actions=state.topView==='trash'?`<button class="btn" id="cancelPreview">取消</button><button class="btn" id="restoreShot">还原截图</button><button class="btn danger" id="deleteForever">永久删除</button>`:state.topView==='pending'?`<button class="btn" id="cancelPreview">取消</button><button class="btn" id="editPending">继续编辑</button><button class="btn primary" id="finishPending">完成整理</button>`:`<button class="btn" id="cancelPreview">取消</button><button class="btn primary" id="copyShot">复制到剪贴板</button>`;
-    host.innerHTML=`<div class="panel-header"><h2>${state.topView==='trash'?'回收站预览':state.topView==='pending'?'待处理截图':'截图预览'}</h2><span class="muted">${new Date(shot.importedAt).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</span></div><div class="bigpreview"><img class="real-image" src="${esc(shot.imageUrl)}" alt="截图预览"/></div>${shot.ocrEngine?`<div class="engine-note">${esc(ocrSummary(shot.ocrEngine,shot.confidence))}</div>`:''}<div class="section"><div class="section-title">关联成员</div><div class="chips">${members.map(x=>`<span class="chip">${esc(x.displayName)}</span>`).join('')||'<span class="muted">未关联</span>'}</div></div>${shot.keywords?.length?`<div class="section"><div class="section-title">关键词</div><div class="chips">${shot.keywords.map(x=>`<span class="chip">#${esc(x)}</span>`).join('')}</div></div>`:''}<div class="section"><div class="section-title">消息内容</div><div class="message-box">${messages}</div></div><div class="actions">${actions}</div>`;
+    if(!shot){emptyPanel(host,state.topView==='trash'?'选择回收站中的截图':state.topView==='pending'?'选择一张待处理截图':'选择一张截图',state.topView==='trash'?'选择后可以还原或永久删除。':state.topView==='pending'?'选择后可以继续填写文本、标签并选择图库。':'选择后可查看大图、可搜索文本并复制原图。');return;}
+    const text=shot.searchText?.trim()?esc(shot.searchText):'<span class="muted">未填写可搜索文本</span>';
+    const actions=state.topView==='trash'?`<button class="btn" id="cancelPreview">取消</button><button class="btn" id="restoreShot">还原截图</button><button class="btn danger" id="deleteForever">永久删除</button>`:state.topView==='pending'?`<button class="btn" id="cancelPreview">取消</button><button class="btn primary" id="editPending">继续处理</button>`:`<button class="btn" id="cancelPreview">取消</button><button class="btn primary" id="copyShot">复制到剪贴板</button>`;
+    host.innerHTML=`<div class="panel-header"><h2>${state.topView==='trash'?'回收站预览':state.topView==='pending'?'待处理截图':'截图预览'}</h2><span class="muted">${new Date(shot.importedAt).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</span></div><div class="bigpreview"><img class="real-image" src="${esc(shot.imageUrl)}" alt="截图预览"/></div>${shot.ocrEngine?`<div class="engine-note">${esc(ocrSummary(shot.ocrEngine,shot.confidence))}</div>`:''}${shot.tags?.length?`<div class="section"><div class="section-title">标签</div><div class="chips">${shot.tags.map(x=>`<span class="chip">#${esc(x)}</span>`).join('')}</div></div>`:''}<div class="section"><div class="section-title">可搜索文本</div><div class="message-box">${text}</div></div><div class="actions">${actions}</div>`;
     $('cancelPreview').onclick=()=>post('clearScreenshotSelection');
     $('copyShot') && ($('copyShot').onclick=()=>post('copyImage',{id:shot.id}));
     $('restoreShot') && ($('restoreShot').onclick=()=>post('restoreFromTrash',{id:shot.id}));
     $('deleteForever') && ($('deleteForever').onclick=()=>askConfirm('永久删除','删除后无法恢复，确定继续？',()=>post('permanentDelete',{id:shot.id}),true));
     $('editPending') && ($('editPending').onclick=()=>setActivePanel('edit'));
-    $('finishPending') && ($('finishPending').onclick=()=>post('finishPending',{id:shot.id}));
   }
 
   function renderAdd(){
     const host=$('add'),current=selectedMember();
-    if(!draft){host.innerHTML=`<div class="panel-header"><h2>添加截图</h2></div><div class="ocr-quick"><label for="addOcrEngine">识别方式</label><select id="addOcrEngine">${ocrEngineOptions()}</select></div><div class="dropzone" id="dropzone"><div><div class="dropicon">＋</div><b>拖入截图或选择本地文件</b><div class="or">支持多选 PNG、JPG、BMP、GIF</div><button class="btn" id="chooseImage">选择图片</button></div></div><div class="formrow"><button class="btn" id="clipboardImage" style="width:100%">从剪贴板读取图片</button></div><div class="formrow"><label>默认加入</label><div class="field" style="display:flex;align-items:center">${esc(current?.displayName||'请先选择成员图库')}</div><button class="btn" id="quickCreateMember" style="width:100%;margin-top:8px">＋ 新建成员图库</button></div><div class="pending-note">单张图片可直接加入当前图库；批量导入会进入待处理，方便统一整理。</div>`;
-      $('addOcrEngine').onchange=e=>requestOcrChange(e.target.value,'settings');
-      $('chooseImage').onclick=()=>post('chooseImage');$('clipboardImage').onclick=()=>post('prepareClipboard');$('quickCreateMember').onclick=()=>openMemberModal();
+    const importEngine=nextImportOcrEngine??state.settings?.ocrEngine??'None';
+    if(!draft){host.innerHTML=`<div class="panel-header"><h2>添加截图</h2></div><div class="ocr-quick"><label for="addOcrEngine">本次识别</label><select id="addOcrEngine">${ocrEngineOptions(importEngine)}</select></div><div class="dropzone" id="dropzone"><div><div class="dropicon">＋</div><b>拖入截图或选择本地文件</b><div class="or">支持多选 PNG、JPG、BMP、GIF</div><button class="btn" id="chooseImage">选择图片</button></div></div><div class="formrow"><button class="btn" id="clipboardImage" style="width:100%">从剪贴板读取图片</button></div><div class="formrow"><label>加入图库</label><div class="field" style="display:flex;align-items:center">${esc(current?.displayName||'请先选择成员图库')}</div><button class="btn" id="quickCreateMember" style="width:100%;margin-top:8px">＋ 新建成员图库</button></div><div class="pending-note">文本和标签都可以留空。单张图片可直接加入当前图库；批量导入会进入待处理。</div>`;
+      $('addOcrEngine').onchange=e=>{const engine=e.target.value;e.target.value=importEngine;requestOcrChange(engine,'next',null,false,()=>{nextImportOcrEngine=engine;});};
+      $('chooseImage').onclick=()=>post('chooseImage',{engine:$('addOcrEngine').value,libraryId:current?.id||null});$('clipboardImage').onclick=()=>post('prepareClipboard',{engine:$('addOcrEngine').value});$('quickCreateMember').onclick=()=>openMemberModal();
       const dz=$('dropzone');['dragenter','dragover'].forEach(n=>dz.addEventListener(n,e=>{e.preventDefault();dz.style.borderColor='#444';}));['dragleave','drop'].forEach(n=>dz.addEventListener(n,e=>{e.preventDefault();dz.style.borderColor='';}));
-      dz.addEventListener('drop',e=>readDroppedFiles([...e.dataTransfer.files].filter(f=>f.type.startsWith('image/'))));return;
+      dz.addEventListener('drop',e=>readDroppedFiles([...e.dataTransfer.files].filter(f=>f.type.startsWith('image/')),$('addOcrEngine').value,current?.id||null));return;
     }
-    const rows=(draft.messages?.length?draft.messages:[{id:crypto.randomUUID(),text:'',personId:current?.id||null}]).map(m=>({...m,personId:m.personId||current?.id||null}));
-    host.innerHTML=`<div class="panel-header"><h2>添加并校正</h2><span class="muted">${esc(ocrSummary(draft.ocrEngine||'OCR',draft.confidence))}</span></div><div class="ocr-quick"><label for="draftOcrEngine">识别方式</label><select id="draftOcrEngine">${ocrEngineOptions()}</select><button class="btn" id="rerunDraftOcr" ${state.settings?.ocrEngine==='None'?'disabled':''}>重新识别</button></div><div class="bigpreview"><img class="real-image" src="${esc(draft.dataUrl)}"/></div><div class="edit-tip">识别到的昵称显示在 ID 栏；群等级不会写入消息内容</div><div class="message-editor compact"><div class="message-editor-head"><span>ID（可不指定）</span><span>消息内容</span></div><div class="message-list" id="draftChatStream">${rows.map(messageRow).join('')}</div><button class="message-add" id="addDraftMessage">＋ 添加一条消息</button></div><div class="section"><div class="section-title">目标图库</div><div class="chips">${current?`<span class="chip">${esc(current.displayName)}</span>`:'<span class="muted">未选择成员图库</span>'}</div></div><div class="section"><div class="section-title">关键词（可选，以逗号分隔）</div><input class="keyword-input" id="draftKeywords" placeholder="例如：加班，名场面"/></div><div class="actions"><button class="btn" id="cancelDraft">取消</button><button class="btn" id="commitPending">暂存</button><button class="btn primary" id="commitCurrent" ${current?'':'disabled'}>加入图库</button></div>`;
-    bindMessageEditor(host);
-    $('draftOcrEngine').onchange=e=>{const engine=e.target.value;e.target.value=state.settings?.ocrEngine||'None';requestOcrChange(engine,'draft',null,true);};
-    $('rerunDraftOcr').onclick=()=>askConfirm('重新识别截图','重新识别会替换尚未保存的消息内容。是否继续？',()=>requestOcrChange(state.settings?.ocrEngine||'None','draft'),false,'重新识别');
-    $('addDraftMessage').onclick=()=>{$('draftChatStream').insertAdjacentHTML('beforeend',messageRow({id:crypto.randomUUID(),personId:null,text:''}));bindMessageEditor(host);$('draftChatStream').lastElementChild.querySelector('[data-text]').focus();};
+    const engineKey=draft.ocrEngineKey||state.settings?.ocrEngine||'None';
+    host.innerHTML=`<div class="panel-header"><h2>添加截图</h2><span class="muted">${esc(ocrSummary(draft.ocrEngine||'未使用 OCR',draft.confidence))}</span></div><div class="ocr-quick"><label for="draftOcrEngine">当前截图</label><select id="draftOcrEngine">${ocrEngineOptions(engineKey)}</select><button class="btn" id="rerunDraftOcr" ${engineKey==='None'?'disabled':''}>重新识别</button></div><div class="bigpreview"><img class="real-image" src="${esc(draft.dataUrl)}" alt="待添加截图"/></div><div class="section text-section"><div class="section-title">可搜索文本（可选）</div><textarea class="search-textarea" id="draftSearchText" placeholder="OCR 结果会显示在这里，也可以手动输入或留空">${esc(draft.searchText||'')}</textarea></div><div class="section"><div class="section-title">标签（可选，以逗号分隔）</div><input class="keyword-input" id="draftTags" value="${esc(draft.tags||'')}" placeholder="例如：加班，名场面"/></div><div class="section"><div class="section-title">加入图库</div><div class="chips">${current?`<span class="chip">${esc(current.displayName)}</span>`:'<span class="muted">未选择成员图库；可以先暂存</span>'}</div></div><div class="actions"><button class="btn" id="cancelDraft">取消</button><button class="btn" id="commitPending">暂存</button><button class="btn primary" id="commitCurrent" ${current?'':'disabled'}>加入图库</button></div>`;
+    $('draftOcrEngine').onchange=e=>{const engine=e.target.value;e.target.value=engineKey;requestOcrChange(engine,'draft',null,true,()=>{draft.tags=$('draftTags').value;});};
+    $('rerunDraftOcr').onclick=()=>askConfirm('重新识别截图','重新识别会替换当前的可搜索文本，标签不会改变。是否继续？',()=>{draft.tags=$('draftTags').value;requestOcrChange(engineKey,'draft');},false,'重新识别');
     $('cancelDraft').onclick=()=>{draft=null;post('cancelDraft');renderAdd();};
     $('commitPending').onclick=()=>commitDraft(true,current);$('commitCurrent').onclick=()=>commitDraft(false,current);
   }
 
-  function collectMessageRows(streamId){return [...$(streamId).querySelectorAll('.message-row')].map((r,i)=>({id:r.dataset.message||crypto.randomUUID(),sortOrder:i,personId:r.querySelector('[data-speaker]').value||null,detectedNickname:r.dataset.detected||null,text:r.querySelector('[data-text]').value.trim()})).filter(x=>x.text);}
-  function commitDraft(pending,current){post('commitDraft',{pending,personId:current?.id||null,keywords:keywords($('draftKeywords')?.value),messages:collectMessageRows('draftChatStream')});}
-  function readDroppedFiles(files){if(!files.length)return;Promise.all(files.map(file=>new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve({name:file.name,dataUrl:r.result});r.onerror=reject;r.readAsDataURL(file);}))).then(items=>items.length===1?post('prepareDroppedImage',items[0]):post('prepareDroppedImages',{items}));}
-  function speakerOptions(id,detectedNickname){const detected=!id&&detectedNickname?`<option value="" selected>识别到：${esc(detectedNickname)}（请选择成员）</option>`:'';return `${detected}<option value="" ${!id&&!detectedNickname?'selected':''}>未指定</option>${state.people.map(p=>`<option value="${p.id}" ${p.id===id?'selected':''}>${esc(p.displayName)}</option>`).join('')}`;}
+  function commitDraft(pending,current){post('commitDraft',{pending,libraryId:current?.id||null,tags:keywords($('draftTags')?.value),searchText:$('draftSearchText')?.value||''});}
+  function readDroppedFiles(files,engine,libraryId){if(!files.length)return;Promise.all(files.map(file=>new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve({name:file.name,dataUrl:r.result});r.onerror=reject;r.readAsDataURL(file);}))).then(items=>items.length===1?post('prepareDroppedImage',{...items[0],engine}):post('prepareDroppedImages',{items,engine,libraryId}));}
+
+  function chooseLibrary(selectedId,onChoose){
+    const memberButton=(p,depth=0)=>`<button class="library-choice ${p.id===selectedId?'active':''}" data-library="${p.id}" style="--depth:${depth}"><span class="avatar a${Math.abs(hash(p.id))%5+1}">${esc(p.displayName.slice(0,1)||'?')}</span><span>${esc(p.displayName)}</span></button>`;
+    const groupBlock=(group,depth=0)=>{const members=state.people.filter(p=>p.categoryIds.includes(group.id));const children=state.categories.filter(x=>x.parentId===group.id);const body=members.map(p=>memberButton(p,depth)).join('')+children.map(x=>groupBlock(x,depth+1)).join('');return body?`<div class="library-group"><div class="library-group-title" style="--depth:${depth}">${esc(group.name)}</div>${body}</div>`:'';};
+    const grouped=state.categories.filter(x=>!x.parentId).map(x=>groupBlock(x)).join('');
+    const ungrouped=state.people.filter(p=>!p.categoryIds.length).map(p=>memberButton(p)).join('');
+    const picker=grouped+(ungrouped?`<div class="library-group"><div class="library-group-title">未分组</div>${ungrouped}</div>`:'');
+    modal(`<h2>选择存放图库</h2><p>这里只决定截图存放在哪里，不表示截图内容与该成员有关。</p><div class="library-picker">${picker||'<div class="picker-empty">尚未创建成员图库</div>'}</div><div class="modal-actions"><button class="btn" data-cancel>取消</button></div>`,layer=>layer.querySelectorAll('[data-library]').forEach(button=>button.onclick=()=>{layer.remove();onChoose(button.dataset.library);}));
+  }
 
   function renderEdit(){
-    const host=$('edit'),shot=selectedScreenshot(); if(!shot||shot.deletedAt){emptyPanel(host,'选择一张截图','从成员图库中选择截图后，可直接修改聊天内容。');return;}
-    const rows=shot.messages.length?shot.messages:[{id:crypto.randomUUID(),personId:state.selectedPersonId,text:''}];
-    host.innerHTML=`<div class="panel-header"><h2>${state.topView==='pending'?'继续处理截图':'编辑截图'}</h2><span class="muted">${rows.length} 条消息</span></div><div class="ocr-quick"><label for="editOcrEngine">识别方式</label><select id="editOcrEngine">${ocrEngineOptions()}</select><button class="btn" id="rerunOcr" ${state.settings?.ocrEngine==='None'?'disabled':''}>重新识别</button></div><div class="edit-tip">识别到的昵称显示在 ID 栏；群等级不会写入消息内容</div><div class="message-editor"><div class="message-editor-head"><span>ID（可不指定）</span><span>消息内容</span><span></span></div><div class="message-list" id="chatStream">${rows.map(messageRow).join('')}</div><button class="message-add" id="addMessage">＋ 添加一条消息</button></div><div class="section"><div class="section-title">关键词（可选）</div><input class="keyword-input" id="editKeywords" value="${esc((shot.keywords||[]).join('，'))}" placeholder="以逗号分隔"/></div><div class="actions"><button class="btn" id="cancelEdit">取消</button><button class="btn primary" id="saveEdit">${state.topView==='pending'?'保存并完成':'保存修改'}</button></div>`;
-    bindEdit();$('addMessage').onclick=()=>{$('chatStream').insertAdjacentHTML('beforeend',messageRow({id:crypto.randomUUID(),personId:null,text:''}));editDirty=true;bindEdit();$('chatStream').lastElementChild.querySelector('[data-text]').focus();};
-    $('cancelEdit').onclick=()=>{editDirty=false;setActivePanel('preview',true);};$('saveEdit').onclick=saveEdit;
-    $('editOcrEngine').onchange=e=>{const engine=e.target.value;e.target.value=state.settings?.ocrEngine||'None';requestOcrChange(engine,'edit',shot.id,true,()=>editDirty=false);};
-    $('rerunOcr').onclick=()=>askConfirm('重新识别截图','重新识别会替换尚未保存的消息内容。是否继续？',()=>{editDirty=false;requestOcrChange(state.settings?.ocrEngine||'None','edit',shot.id);},false,'重新识别');
+    const host=$('edit'),shot=selectedScreenshot(); if(!shot||shot.deletedAt){emptyPanel(host,'选择一张截图','从图库或待处理中选择截图后，可以修改可搜索文本和标签。');return;}
+    const engineKey=shot.ocrEngineKey||'None';
+    if(editTargetScreenshotId!==shot.id){editTargetScreenshotId=shot.id;pendingTargetLibraryId=shot.libraryId||null;editDraftTags=null;editDraftSearchText=null;}
+    const target=memberById(state.topView==='pending'?pendingTargetLibraryId:shot.libraryId);
+    host.innerHTML=`<div class="panel-header"><h2>${state.topView==='pending'?'继续处理截图':'编辑截图'}</h2><span class="muted">文本和标签均可留空</span></div><div class="ocr-quick"><label for="editOcrEngine">当前截图</label><select id="editOcrEngine">${ocrEngineOptions(engineKey)}</select><button class="btn" id="rerunOcr" ${engineKey==='None'?'disabled':''}>重新识别</button></div><div class="section text-section edit-text-section"><div class="section-title">可搜索文本（可选）</div><textarea class="search-textarea" id="editSearchText" placeholder="输入以后可能用于搜索这张截图的文字，也可以留空">${esc(editDraftSearchText??shot.searchText??'')}</textarea></div><div class="section"><div class="section-title">标签（可选，以逗号分隔）</div><input class="keyword-input" id="editTags" value="${esc(editDraftTags??(shot.tags||[]).join('，'))}" placeholder="例如：名场面，游戏"/></div>${state.topView==='pending'?`<div class="section"><div class="section-title">存放图库</div><button class="library-target" id="choosePendingLibrary"><span>${esc(target?.displayName||'选择成员图库')}</span><span>选择…</span></button></div>`:''}<div class="actions"><button class="btn" id="cancelEdit">取消</button><button class="btn primary" id="saveEdit" ${state.topView==='pending'&&!target?'disabled':''}>${state.topView==='pending'?'保存到图库':'保存修改'}</button></div>`;
+    $('editSearchText').oninput=()=>{editDirty=true;editDraftSearchText=$('editSearchText').value;};$('editTags').oninput=()=>{editDirty=true;editDraftTags=$('editTags').value;};
+    $('cancelEdit').onclick=()=>{editDirty=false;editDraftTags=null;editDraftSearchText=null;setActivePanel('preview',true);};$('saveEdit').onclick=saveEdit;
+    $('choosePendingLibrary')&&($('choosePendingLibrary').onclick=()=>chooseLibrary(pendingTargetLibraryId,id=>{editDraftSearchText=$('editSearchText').value;editDraftTags=$('editTags').value;pendingTargetLibraryId=id;editDirty=true;renderEdit();}));
+    $('editOcrEngine').onchange=e=>{const engine=e.target.value;e.target.value=engineKey;requestOcrChange(engine,'edit',shot.id,true,()=>{editDirty=false;editDraftSearchText=null;});};
+    $('rerunOcr').onclick=()=>askConfirm('重新识别截图','重新识别会替换当前的可搜索文本，标签不会改变。是否继续？',()=>{editDirty=false;editDraftSearchText=null;requestOcrChange(engineKey,'edit',shot.id);},false,'重新识别');
   }
-  function messageRow(m){return `<div class="message-row" data-message="${esc(m.id||'')}" data-detected="${esc(m.detectedNickname||'')}"><select class="message-speaker" data-speaker aria-label="消息 ID">${speakerOptions(m.personId,m.detectedNickname)}</select><textarea class="message-text" data-text rows="2" aria-label="消息内容" placeholder="输入消息内容">${esc(m.text)}</textarea><button class="message-remove" data-remove title="删除这条消息" aria-label="删除这条消息">×</button></div>`;}
-  function bindMessageEditor(host){host.querySelectorAll('[data-remove]').forEach(n=>n.onclick=()=>n.closest('.message-row').remove());}
-  function bindEdit(){const h=$('edit');h.querySelectorAll('textarea,select,input').forEach(n=>n.oninput=()=>editDirty=true);h.querySelectorAll('[data-remove]').forEach(n=>n.onclick=()=>{n.closest('.message-row').remove();editDirty=true;});}
-  function saveEdit(){const shot=selectedScreenshot(),messages=collectMessageRows('chatStream');post('saveEdit',{id:shot.id,messages,personIds:[...new Set(messages.map(x=>x.personId).filter(Boolean))],keywords:keywords($('editKeywords').value)});editDirty=false;}
+  function saveEdit(){const shot=selectedScreenshot();post('saveEdit',{id:shot.id,libraryId:state.topView==='pending'?pendingTargetLibraryId:shot.libraryId,tags:keywords($('editTags').value),searchText:$('editSearchText').value});editDirty=false;pendingTargetLibraryId=null;editDraftTags=null;editDraftSearchText=null;}
 
   function renderSettings(){
     const s=state.settings||{},keys=[...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'].concat(Array.from({length:12},(_,i)=>`F${i+1}`));
     const selected=['None','PaddleOcrV6','Tesseract'].includes(s.ocrEngine)?s.ocrEngine:'None';
     const paddleStatus=s.paddleAvailable?'PaddleOCR 已安装，可直接使用':'PaddleOCR 尚未安装；切换时会先显示安装确认，不会自动下载';
-    $('settingsPage').innerHTML=`<h1>设置</h1><div class="settings-lead">管理 QuoteVault 的 OCR、快捷键、数据与备份。</div><div class="settings-card"><h2>OCR 引擎</h2><p>选择后立即生效。默认不进行 OCR；PaddleOCR 适合中文聊天截图，但运行环境与模型约占用 900 MB。</p><div class="ocr-row"><select id="ocrEngine">${ocrEngineOptions(selected)}</select><span class="muted">${paddleStatus}</span></div></div><div class="settings-card"><h2>全局收录快捷键</h2><p>按下快捷键后，将剪贴板图片静默加入待处理。</p><div class="hotkey-row"><label><input id="hotCtrl" type="checkbox" ${s.hotKeyCtrl?'checked':''}/>Ctrl</label><label><input id="hotAlt" type="checkbox" ${s.hotKeyAlt?'checked':''}/>Alt</label><label><input id="hotShift" type="checkbox" ${s.hotKeyShift?'checked':''}/>Shift</label><select id="hotKey">${keys.map(k=>`<option ${k===s.hotKey?'selected':''}>${k}</option>`).join('')}</select><button class="btn primary" id="saveHotKey">保存快捷键</button></div></div><div class="settings-card"><h2>数据与备份</h2><p>备份包含索引、成员、群组、关键词和全部原图。</p><div class="smallrow"><button class="btn" id="backupData">导出完整备份</button><button class="btn" id="restoreData">从备份恢复</button></div></div>`;
-    $('ocrEngine').onchange=e=>{const engine=e.target.value;e.target.value=selected;requestOcrChange(engine,draft?'draft':'settings',null,!!draft);};
+    $('settingsPage').innerHTML=`<h1>设置</h1><div class="settings-lead">管理 QuoteVault 的 OCR、快捷键、数据与备份。</div><div class="settings-card"><h2>默认 OCR 引擎</h2><p>仅作为以后添加截图时的默认值；添加和编辑页面可以为当前截图临时切换。PaddleOCR 运行环境与模型约占用 900 MB。</p><div class="ocr-row"><select id="ocrEngine">${ocrEngineOptions(selected)}</select><span class="muted">${paddleStatus}</span></div></div><div class="settings-card"><h2>全局收录快捷键</h2><p>按下快捷键后，将剪贴板图片静默加入待处理。</p><div class="hotkey-row"><label><input id="hotCtrl" type="checkbox" ${s.hotKeyCtrl?'checked':''}/>Ctrl</label><label><input id="hotAlt" type="checkbox" ${s.hotKeyAlt?'checked':''}/>Alt</label><label><input id="hotShift" type="checkbox" ${s.hotKeyShift?'checked':''}/>Shift</label><select id="hotKey">${keys.map(k=>`<option ${k===s.hotKey?'selected':''}>${k}</option>`).join('')}</select><button class="btn primary" id="saveHotKey">保存快捷键</button></div></div><div class="settings-card"><h2>数据与备份</h2><p>备份包含索引、群组、成员图库、可搜索文本、标签和全部原图。</p><div class="smallrow"><button class="btn" id="backupData">导出完整备份</button><button class="btn" id="restoreData">从备份恢复</button></div></div>`;
+    $('ocrEngine').onchange=e=>{const engine=e.target.value;e.target.value=selected;requestOcrChange(engine,'settings',null,false,()=>{nextImportOcrEngine=null;});};
     $('saveHotKey').onclick=()=>{
       if(!$('hotCtrl').checked&&!$('hotAlt').checked&&!$('hotShift').checked)return toast('至少选择一个修饰键。');
       post('saveHotKeySettings',{hotKeyCtrl:$('hotCtrl').checked,hotKeyAlt:$('hotAlt').checked,hotKeyShift:$('hotShift').checked,hotKey:$('hotKey').value});toast('快捷键已保存');
@@ -487,7 +498,7 @@
 
   window.quoteVault={
     setState(next){state={...state,...next};renderApp();setActivePanel(state.activePanel||'preview',true);},
-    setDraft(next){const stillAdding=state.topView==='library'&&state.activePanel==='add';draft=next;setBusy(false);if(stillAdding)setActivePanel('add',true);else{renderApp();toast('截图识别已完成，可在“添加”中继续处理。');}},
+    setDraft(next){const stillAdding=state.topView==='library'&&state.activePanel==='add';if(draft&&Object.hasOwn(draft,'tags'))next.tags=draft.tags;draft=next;setBusy(false);if(stillAdding)setActivePanel('add',true);else{renderApp();toast('截图已读取，可在“添加”中继续处理。');}},
     clearDraft(){draft=null;renderAdd();},setBusy(value,text){Array.isArray(value)?setBusy(value[0],value[1]):setBusy(value,text);},
     showError:toast,setWindowState:setWindowIcon,
     showDuplicate(info){modal(`<h2>发现重复图片</h2><p>图库中已经存在“${esc(info.originalFileName)}”。请选择如何处理。</p><div class="modal-actions"><button class="btn" data-skip>跳过</button><button class="btn" data-view>查看已有截图</button><button class="btn primary" data-import>仍然导入</button></div>`,layer=>{layer.querySelector('[data-skip]').onclick=()=>{layer.remove();post('resolveDuplicate',{action:'skip'});};layer.querySelector('[data-view]').onclick=()=>{layer.remove();post('resolveDuplicate',{action:'view'});};layer.querySelector('[data-import]').onclick=()=>{layer.remove();post('resolveDuplicate',{action:'import'});};});}

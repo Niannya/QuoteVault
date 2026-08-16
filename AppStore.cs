@@ -170,6 +170,7 @@ public sealed class AppStore
 
     private static void NormalizeState(AppState state)
     {
+        var migrateLegacyScreenshots = state.SchemaVersion < 2;
         state.Categories ??= [];
         state.People ??= [];
         state.NicknameMappings ??= [];
@@ -186,12 +187,19 @@ public sealed class AppStore
             ValidateStoredFileName(screenshot.StoredFileName);
             screenshot.OriginalFileName ??= screenshot.StoredFileName;
             screenshot.OcrRawText ??= string.Empty;
+            screenshot.SearchText ??= string.Empty;
             screenshot.OcrEngine ??= string.Empty;
+            screenshot.OcrEngineKey = screenshot.OcrEngineKey is "PaddleOcrV6" or "Tesseract" or "None"
+                ? screenshot.OcrEngineKey
+                : screenshot.OcrEngine.Contains("Paddle", StringComparison.OrdinalIgnoreCase) ? "PaddleOcrV6"
+                : screenshot.OcrEngine.Contains("Tesseract", StringComparison.OrdinalIgnoreCase) ? "Tesseract"
+                : "None";
             screenshot.DetectedNicknames ??= [];
             screenshot.IgnoredNicknames ??= [];
             screenshot.PersonIds ??= [];
             screenshot.Messages ??= [];
             screenshot.Keywords ??= [];
+            screenshot.Tags ??= [];
             foreach (var message in screenshot.Messages)
             {
                 message.Text ??= string.Empty;
@@ -199,7 +207,24 @@ public sealed class AppStore
                     ? null
                     : message.DetectedNickname.Trim();
             }
+
+            // 0.3.x 将图库和消息发言人都保存在 PersonIds 中。升级后只取第一个有效图库，
+            // 旧消息与昵称仍保留在 JSON 中，确保升级不会丢失用户数据。
+            if (!screenshot.LibraryId.HasValue || !state.People.Any(x => x.Id == screenshot.LibraryId.Value))
+                screenshot.LibraryId = migrateLegacyScreenshots &&
+                                       screenshot.PersonIds.FirstOrDefault(id => state.People.Any(x => x.Id == id)) is var id && id != Guid.Empty
+                    ? id : null;
+            if (migrateLegacyScreenshots && string.IsNullOrWhiteSpace(screenshot.SearchText))
+                screenshot.SearchText = string.Join(Environment.NewLine,
+                    screenshot.Messages.OrderBy(x => x.SortOrder).Select(x => x.Text)
+                        .Where(x => !string.IsNullOrWhiteSpace(x))).Trim();
+            if (migrateLegacyScreenshots && screenshot.Tags.Count == 0 && screenshot.Keywords.Count > 0)
+                screenshot.Tags = screenshot.Keywords.ToList();
+            screenshot.PersonIds = screenshot.LibraryId.HasValue ? [screenshot.LibraryId.Value] : [];
+            if (!screenshot.DeletedAt.HasValue && !screenshot.NeedsReview && !screenshot.LibraryId.HasValue)
+                screenshot.NeedsReview = true;
         }
+        state.SchemaVersion = 2;
         if (!state.Settings.HasExplicitOcrChoice)
         {
             state.Settings.OcrEngine = "None";

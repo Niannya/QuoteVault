@@ -56,19 +56,12 @@ public sealed class PaddleOcrService : IDisposable
                 var output = root.GetProperty("output");
                 var messages = output.GetProperty("messages").EnumerateArray()
                     .Select(x => x.GetString() ?? string.Empty).ToArray();
-                var speakerNicknames = output.TryGetProperty("messageDetails", out var details)
-                    ? details.EnumerateArray().Select(x => x.TryGetProperty("nickname", out var nickname) &&
-                                                          nickname.ValueKind == JsonValueKind.String
-                        ? nickname.GetString()
-                        : null).ToArray()
-                    : new string?[messages.Length];
                 return new OcrOutput(
                     output.GetProperty("rawText").GetString() ?? string.Empty,
                     output.GetProperty("confidence").GetSingle(),
                     messages,
-                    output.GetProperty("nicknameCandidates").EnumerateArray().Select(x => x.GetString() ?? string.Empty).ToArray(),
-                    output.GetProperty("engine").GetString() ?? "PaddleOCR v6 medium",
-                    speakerNicknames);
+                    [],
+                    output.GetProperty("engine").GetString() ?? "PaddleOCR v6 medium");
             }
         }
         catch (OperationCanceledException)

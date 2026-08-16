@@ -49,9 +49,10 @@ internal static class SelfTest
             var result = service.RecognizeAsync(imagePath).GetAwaiter().GetResult();
             Console.WriteLine($"ENGINE={result.Engine}");
             Console.WriteLine($"CONFIDENCE={result.Confidence:P0}");
-            Console.WriteLine($"NICKNAMES={string.Join(" | ", result.NicknameCandidates)}");
-            Console.WriteLine("MESSAGES:");
-            foreach (var message in result.Lines) Console.WriteLine($"---\n{message}");
+            Console.WriteLine("RAW TEXT:");
+            Console.WriteLine(result.RawText);
+            Console.WriteLine("SEARCHABLE TEXT:");
+            Console.WriteLine(string.Join(Environment.NewLine, result.Lines));
             return string.IsNullOrWhiteSpace(result.RawText) ? 1 : 0;
         }
         catch (Exception ex)
@@ -73,33 +74,33 @@ internal static class SelfTest
             var person = new PersonItem { DisplayName = "小明", CategoryIds = [category.Id] };
             store.State.Categories.Add(category);
             store.State.People.Add(person);
-            store.State.NicknameMappings.Add(new NicknameMapping { Nickname = "熬夜冠军", PersonId = person.Id });
             var image = new byte[] { 1, 2, 3, 4 };
             var screenshot = store.AddImage(image, "test.png", ".png");
+            // 模拟 0.3.x 数据，验证启动时会迁移成“单一图库 + 可搜索文本 + 标签”。
             screenshot.PersonIds.Add(person.Id);
             screenshot.Messages.Add(new MessageItem
             {
                 SortOrder = 0,
-                PersonId = person.Id,
-                DetectedNickname = "小明 LV100 王者",
                 Text = "今晚打游戏吗？"
             });
             screenshot.Keywords.Add("名场面");
+            screenshot.NeedsReview = false;
+            store.State.SchemaVersion = 1;
             store.Save();
 
             var reloaded = new AppStore(root);
             Assert(reloaded.State.People.Count == 1, "群友持久化");
-            Assert(reloaded.State.Screenshots.Single().Messages.Single().Text == "今晚打游戏吗？", "消息持久化");
-            Assert(reloaded.State.Screenshots.Single().Messages.Single().DetectedNickname == "小明 LV100 王者",
-                "识别昵称持久化");
-            Assert(reloaded.State.Screenshots.Single().Keywords.SequenceEqual(["名场面"]), "关键词持久化");
+            Assert(reloaded.State.SchemaVersion == 2, "数据升级到新版结构");
+            Assert(reloaded.State.Screenshots.Single().LibraryId == person.Id, "旧图库关系迁移");
+            Assert(reloaded.State.Screenshots.Single().SearchText == "今晚打游戏吗？", "旧消息迁移为可搜索文本");
+            Assert(reloaded.State.Screenshots.Single().Tags.SequenceEqual(["名场面"]), "旧关键词迁移为标签");
             Assert(reloaded.FindDuplicate(AppStore.ComputeSha256(image)) is not null, "重复图片检测");
+            reloaded.State.Screenshots.Single().SearchText = string.Empty;
+            reloaded.Save();
+            Assert(new AppStore(root).State.Screenshots.Single().SearchText == string.Empty, "允许清空可搜索文本");
 
-            var candidates = OcrService.ExtractNicknameCandidates(["小明：今晚打游戏吗？", "系统消息", "小红"]);
-            Assert(candidates.SequenceEqual(["小明"]), "群昵称候选提取");
             var parsedChat = OcrService.SplitChatLines(["& 夕笔下若隐若现的", "越想越气（"]);
-            Assert(parsedChat.Nicknames.SequenceEqual(["夕笔下若隐若现的"]) &&
-                   parsedChat.Messages.SequenceEqual(["越想越气（"]), "昵称与消息分离");
+            Assert(parsedChat.Messages.SequenceEqual(["越想越气（"]), "聊天界面噪声不会进入正文");
             var wrappedMessage = OcrService.SplitChatLines(["& 小明 LV10", "这是同一条消息的第一行", "这是第二行"]);
             Assert(wrappedMessage.Messages.SequenceEqual([$"这是同一条消息的第一行{Environment.NewLine}这是第二行"]),
                 "多行气泡合并为一条消息");
