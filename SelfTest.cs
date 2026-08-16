@@ -70,6 +70,11 @@ internal static class SelfTest
         {
             var store = new AppStore(root);
             Assert(store.State.Settings.OcrEngine == "None", "新图库默认不启用 OCR");
+            Assert(store.State.Settings.SidebarWidth == AppSettings.DefaultSidebarWidth, "左侧栏使用默认宽度");
+            Assert(store.State.Settings.WorkbenchWidth == AppSettings.DefaultWorkbenchWidth, "工作区使用默认宽度");
+            store.State.Settings.SidebarWidth = 312;
+            store.State.Settings.WorkbenchWidth = 688;
+            store.State.Settings.ScreenshotSort = "nameAsc";
             var category = new CategoryItem { Name = "大学" };
             var person = new PersonItem { DisplayName = "小明", CategoryIds = [category.Id] };
             store.State.Categories.Add(category);
@@ -90,6 +95,9 @@ internal static class SelfTest
 
             var reloaded = new AppStore(root);
             Assert(reloaded.State.People.Count == 1, "群友持久化");
+            Assert(reloaded.State.Settings.SidebarWidth == 312 && reloaded.State.Settings.WorkbenchWidth == 688,
+                "自定义布局持久化");
+            Assert(reloaded.State.Settings.ScreenshotSort == "nameAsc", "截图排序方式持久化");
             Assert(reloaded.State.SchemaVersion == 2, "数据升级到新版结构");
             Assert(reloaded.State.Screenshots.Single().LibraryId == person.Id, "旧图库关系迁移");
             Assert(reloaded.State.Screenshots.Single().SearchText == "今晚打游戏吗？", "旧消息迁移为可搜索文本");

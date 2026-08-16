@@ -176,6 +176,11 @@ public sealed class AppStore
         state.NicknameMappings ??= [];
         state.Screenshots ??= [];
         state.Settings ??= new AppSettings();
+        state.Settings.SidebarWidth = Math.Clamp(state.Settings.SidebarWidth, 170, 420);
+        state.Settings.WorkbenchWidth = Math.Clamp(state.Settings.WorkbenchWidth, 360, 800);
+        state.Settings.ScreenshotSort = state.Settings.ScreenshotSort is "newest" or "oldest" or "nameAsc" or "nameDesc"
+            ? state.Settings.ScreenshotSort
+            : "newest";
         foreach (var category in state.Categories) category.Name ??= "未命名群组";
         foreach (var person in state.People)
         {

@@ -200,6 +200,18 @@ public sealed class MainForm : Form
                     SaveHotKeySettings(payload);
                     await SendStateAsync();
                     break;
+                case "saveLayoutSettings":
+                    SaveLayoutSettings(payload);
+                    await SendStateAsync();
+                    break;
+                case "resetLayoutSettings":
+                    ResetLayoutSettings();
+                    await SendStateAsync();
+                    break;
+                case "saveScreenshotSort":
+                    SaveScreenshotSort(payload);
+                    await SendStateAsync();
+                    break;
                 case "setOcrEngine":
                     await SetOcrEngineAsync(payload);
                     break;
@@ -321,7 +333,10 @@ public sealed class MainForm : Form
                 hotKeyShift = _store.State.Settings.HotKeyShift,
                 hotKey = _store.State.Settings.HotKey.ToString(),
                 ocrEngine = _store.State.Settings.OcrEngine,
-                paddleAvailable = _paddleOcr.IsFullyInstalled
+                paddleAvailable = _paddleOcr.IsFullyInstalled,
+                sidebarWidth = _store.State.Settings.SidebarWidth,
+                workbenchWidth = _store.State.Settings.WorkbenchWidth,
+                screenshotSort = _store.State.Settings.ScreenshotSort
             }
         };
         await InvokeWebAsync("setState", state);
@@ -776,6 +791,30 @@ public sealed class MainForm : Form
         var target = payload.TryGetProperty("target", out var targetValue) ? targetValue.GetString() : "settings";
         if (target == "settings") SaveOcrEngine(engine);
         await CompleteOcrEngineChangeAsync(payload, engine);
+    }
+
+    private void SaveLayoutSettings(JsonElement payload)
+    {
+        var settings = _store.State.Settings;
+        if (payload.TryGetProperty("sidebarWidth", out var sidebarWidth) && sidebarWidth.TryGetInt32(out var sidebar))
+            settings.SidebarWidth = Math.Clamp(sidebar, 170, 420);
+        if (payload.TryGetProperty("workbenchWidth", out var workbenchWidth) && workbenchWidth.TryGetInt32(out var workbench))
+            settings.WorkbenchWidth = Math.Clamp(workbench, 360, 800);
+        _store.Save();
+    }
+
+    private void ResetLayoutSettings()
+    {
+        _store.State.Settings.SidebarWidth = AppSettings.DefaultSidebarWidth;
+        _store.State.Settings.WorkbenchWidth = AppSettings.DefaultWorkbenchWidth;
+        _store.Save();
+    }
+
+    private void SaveScreenshotSort(JsonElement payload)
+    {
+        var value = payload.TryGetProperty("value", out var property) ? property.GetString() : null;
+        _store.State.Settings.ScreenshotSort = value is "oldest" or "nameAsc" or "nameDesc" ? value : "newest";
+        _store.Save();
     }
 
     private void SaveOcrEngine(string engine)

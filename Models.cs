@@ -71,12 +71,18 @@ public sealed class MessageItem
 
 public sealed class AppSettings
 {
+    public const int DefaultSidebarWidth = 230;
+    public const int DefaultWorkbenchWidth = 560;
+
     public bool HotKeyCtrl { get; set; } = true;
     public bool HotKeyAlt { get; set; } = true;
     public bool HotKeyShift { get; set; }
     public Keys HotKey { get; set; } = Keys.F8;
     public string OcrEngine { get; set; } = "None";
     public bool HasExplicitOcrChoice { get; set; }
+    public int SidebarWidth { get; set; } = DefaultSidebarWidth;
+    public int WorkbenchWidth { get; set; } = DefaultWorkbenchWidth;
+    public string ScreenshotSort { get; set; } = "newest";
 }
 
 public sealed record OcrOutput(string RawText, float Confidence, IReadOnlyList<string> Lines,

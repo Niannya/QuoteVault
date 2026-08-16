@@ -20,7 +20,10 @@
   let editTargetScreenshotId = null;
   let editDraftTags = null;
   let editDraftSearchText = null;
+  let layoutDrag = null;
   const ungroupedKey = '__ungrouped__';
+  const layoutDefaults = { sidebar: 230, workbench: 560 };
+  const layoutLimits = { sidebarMin: 170, sidebarMax: 420, workbenchMin: 360, workbenchMax: 800, centerMin: 300, splitters: 14 };
 
   const $ = id => document.getElementById(id);
   const esc = value => String(value ?? '').replace(/[&<>'"]/g, ch =>
@@ -43,6 +46,83 @@
   };
   const checkSvg = '<svg viewBox="0 0 16 16"><path d="m3.5 8.2 2.8 2.8 6.2-6.2"/></svg>';
   const moreSvg = '<svg viewBox="0 0 18 18" width="17" height="17" fill="currentColor"><circle cx="4" cy="9" r="1.2"/><circle cx="9" cy="9" r="1.2"/><circle cx="14" cy="9" r="1.2"/></svg>';
+  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+
+  function fitLayout(sidebarWidth, workbenchWidth) {
+    const workspace = document.querySelector('.workspace');
+    const available = Math.max(
+      layoutLimits.sidebarMin + layoutLimits.workbenchMin,
+      (workspace?.clientWidth || 1120) - layoutLimits.splitters - layoutLimits.centerMin
+    );
+    let sidebar = clamp(Number(sidebarWidth) || layoutDefaults.sidebar, layoutLimits.sidebarMin, layoutLimits.sidebarMax);
+    let workbench = clamp(Number(workbenchWidth) || layoutDefaults.workbench, layoutLimits.workbenchMin, layoutLimits.workbenchMax);
+    let overflow = sidebar + workbench - available;
+    if (overflow > 0) {
+      const reduceWorkbench = Math.min(overflow, workbench - layoutLimits.workbenchMin);
+      workbench -= reduceWorkbench;
+      overflow -= reduceWorkbench;
+      sidebar -= Math.min(overflow, sidebar - layoutLimits.sidebarMin);
+    }
+    return { sidebar: Math.round(sidebar), workbench: Math.round(workbench) };
+  }
+
+  function applyLayoutSettings(sidebarWidth = state.settings?.sidebarWidth, workbenchWidth = state.settings?.workbenchWidth) {
+    const fitted = fitLayout(sidebarWidth, workbenchWidth);
+    document.documentElement.style.setProperty('--sidebar-width', `${fitted.sidebar}px`);
+    document.documentElement.style.setProperty('--workbench-width', `${fitted.workbench}px`);
+    $('sidebarSplitter')?.setAttribute('aria-valuenow', fitted.sidebar);
+    $('workbenchSplitter')?.setAttribute('aria-valuenow', fitted.workbench);
+    return fitted;
+  }
+
+  function saveDisplayedLayout() {
+    const sidebarWidth = Math.round(document.querySelector('.sidebar').getBoundingClientRect().width);
+    const workbenchWidth = Math.round(document.querySelector('.workbench').getBoundingClientRect().width);
+    post('saveLayoutSettings', { sidebarWidth, workbenchWidth });
+  }
+
+  function bindLayoutSplitter(node, target) {
+    const finish = event => {
+      if (!layoutDrag || layoutDrag.node !== node) return;
+      if (node.hasPointerCapture?.(event.pointerId)) node.releasePointerCapture(event.pointerId);
+      node.classList.remove('dragging');
+      document.body.classList.remove('resizing-layout');
+      layoutDrag = null;
+      saveDisplayedLayout();
+    };
+    node.addEventListener('pointerdown', event => {
+      if (event.button !== 0 || document.querySelector('.workspace').classList.contains('settings-mode')) return;
+      const current = applyLayoutSettings();
+      layoutDrag = { node, target, pointerId: event.pointerId, startX: event.clientX, ...current };
+      node.setPointerCapture?.(event.pointerId);
+      node.classList.add('dragging');
+      document.body.classList.add('resizing-layout');
+      event.preventDefault();
+    });
+    node.addEventListener('pointermove', event => {
+      if (!layoutDrag || layoutDrag.node !== node || layoutDrag.pointerId !== event.pointerId) return;
+      const delta = event.clientX - layoutDrag.startX;
+      const workspaceWidth = document.querySelector('.workspace').clientWidth;
+      if (target === 'sidebar') {
+        const max = workspaceWidth - layoutLimits.splitters - layoutLimits.centerMin - layoutDrag.workbench;
+        applyLayoutSettings(clamp(layoutDrag.sidebar + delta, layoutLimits.sidebarMin, Math.min(layoutLimits.sidebarMax, max)), layoutDrag.workbench);
+      } else {
+        const max = workspaceWidth - layoutLimits.splitters - layoutLimits.centerMin - layoutDrag.sidebar;
+        applyLayoutSettings(layoutDrag.sidebar, clamp(layoutDrag.workbench - delta, layoutLimits.workbenchMin, Math.min(layoutLimits.workbenchMax, max)));
+      }
+    });
+    node.addEventListener('pointerup', finish);
+    node.addEventListener('pointercancel', finish);
+    node.addEventListener('keydown', event => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      const current = applyLayoutSettings();
+      const direction = event.key === 'ArrowRight' ? 1 : -1;
+      if (target === 'sidebar') applyLayoutSettings(current.sidebar + direction * 10, current.workbench);
+      else applyLayoutSettings(current.sidebar, current.workbench - direction * 10);
+      saveDisplayedLayout();
+      event.preventDefault();
+    });
+  }
 
   function resetSelectionMode() {
     selectionMode = false; selectedIds.clear();
@@ -84,12 +164,9 @@
 
   function setBusy(value, text = '') {
     document.body.classList.toggle('loading', !!value);
-    const status = document.querySelector('.statusbar span');
-    if (text) status.textContent = text;
-    else if (!value) {
-      const engine=state.settings?.ocrEngine;
-      status.textContent=engine==='None'?'本地模式 · OCR 已关闭':engine==='PaddleOcrV6'?(state.settings?.paddleAvailable?'本地模式 · PaddleOCR v6 就绪':'本地模式 · PaddleOCR 未安装'):'本地模式 · Tesseract 就绪';
-    }
+    document.body.setAttribute('aria-busy', value ? 'true' : 'false');
+    if (value && text) document.body.dataset.busyLabel = text;
+    else delete document.body.dataset.busyLabel;
   }
 
   function toast(message) {
@@ -105,15 +182,17 @@
 
   function closeFloating() {
     document.querySelector('.context-menu')?.remove();
+    document.querySelectorAll('[aria-expanded="true"]').forEach(node => node.setAttribute('aria-expanded','false'));
   }
 
-  function showMenu(x, y, items) {
+  function showMenu(x, y, items, minimumWidth = 176) {
     closeFloating();
     const menu = document.createElement('div');
     menu.className = 'context-menu';
+    menu.style.minWidth = `${minimumWidth}px`;
     menu.innerHTML = items.map((item, i) => item.separator
       ? `<div class="separator"></div>`
-      : `<button data-menu="${i}" class="${item.danger ? 'danger' : ''}">${esc(item.label)}</button>`).join('');
+      : `<button data-menu="${i}" class="${item.danger ? 'danger' : ''}">${item.checked===undefined?'':`<span class="menu-check">${item.checked?'✓':''}</span>`}<span>${esc(item.label)}</span></button>`).join('');
     document.body.append(menu);
     menu.querySelectorAll('[data-menu]').forEach(button => button.addEventListener('click', event => {
       event.stopPropagation();
@@ -142,8 +221,33 @@
     });
   }
 
-  function ocrEngineOptions(selected=state.settings?.ocrEngine||'None') {
-    return `<option value="None" ${selected==='None'?'selected':''}>不使用 OCR</option><option value="PaddleOcrV6" ${selected==='PaddleOcrV6'?'selected':''}>PaddleOCR v6${state.settings?.paddleAvailable?'':' · 未安装'}</option><option value="Tesseract" ${selected==='Tesseract'?'selected':''}>Tesseract 5</option>`;
+  function ocrEngineChoices() {
+    return [
+      {value:'None',label:'不使用 OCR'},
+      {value:'PaddleOcrV6',label:`PaddleOCR v6${state.settings?.paddleAvailable?'':' · 未安装'}`},
+      {value:'Tesseract',label:'Tesseract 5'}
+    ];
+  }
+
+  function customSelectMarkup(id, options, selected, className = '', ariaLabel = '选择选项') {
+    const current=options.find(option=>option.value===selected)??options[0];
+    return `<button type="button" class="custom-select ${className}" id="${id}" value="${esc(current.value)}" aria-label="${esc(ariaLabel)}" aria-haspopup="menu" aria-expanded="false"><span>${esc(current.label)}</span><svg viewBox="0 0 14 14"><path d="m3.5 5.25 3.5 3.5 3.5-3.5"/></svg></button>`;
+  }
+
+  function setCustomSelectValue(button, option) {
+    button.value=option.value;
+    button.querySelector('span').textContent=option.label;
+  }
+
+  function bindCustomSelect(id, options, onChange, commitSelection = true) {
+    const button=$(id); if(!button)return;
+    button.onclick=event=>{
+      const rect=button.getBoundingClientRect();
+      const items=options.map(option=>({label:option.label,checked:option.value===button.value,action:()=>{if(commitSelection)setCustomSelectValue(button,option);onChange?.(option.value);}}));
+      showMenu(rect.left,rect.bottom+5,items,Math.max(176,rect.width));
+      button.setAttribute('aria-expanded','true');
+      event.stopPropagation();
+    };
   }
 
   function requestOcrChange(engine, target='settings', id=null, confirmOverwrite=false, onAccepted=null) {
@@ -265,7 +369,28 @@
     else items = [];
     const query = $('centerSearch').value.trim().toLocaleLowerCase();
     if (query) items = items.filter(x => matchesScreenshot(x, query));
-    return [...items].sort((a,b)=>new Date(b.importedAt)-new Date(a.importedAt));
+    const mode=state.settings?.screenshotSort||'newest';
+    const timeOf=shot=>new Date(state.topView==='trash'&&shot.deletedAt?shot.deletedAt:shot.importedAt).valueOf()||0;
+    return [...items].sort((a,b)=>mode==='oldest'?timeOf(a)-timeOf(b)
+      :mode==='nameAsc'?a.originalFileName.localeCompare(b.originalFileName,'zh-CN',{numeric:true,sensitivity:'base'})
+      :mode==='nameDesc'?b.originalFileName.localeCompare(a.originalFileName,'zh-CN',{numeric:true,sensitivity:'base'})
+      :timeOf(b)-timeOf(a));
+  }
+
+  function sortChoices() {
+    const trash=state.topView==='trash';
+    return [
+      {value:'newest',label:trash?'最近删除':'最近添加'},
+      {value:'oldest',label:trash?'最早删除':'最早添加'},
+      {value:'nameAsc',label:'文件名 A–Z'},
+      {value:'nameDesc',label:'文件名 Z–A'}
+    ];
+  }
+
+  function openSortMenu() {
+    const button=$('sortMenu'),choices=sortChoices(),selected=state.settings?.screenshotSort||'newest',rect=button.getBoundingClientRect();
+    showMenu(rect.right-Math.max(176,rect.width),rect.bottom+5,choices.map(choice=>({label:choice.label,checked:choice.value===selected,action:()=>{state.settings.screenshotSort=choice.value;post('saveScreenshotSort',{value:choice.value});renderCenter();}})),Math.max(176,rect.width));
+    button.setAttribute('aria-expanded','true');
   }
 
   function toggleSelectionMode() {
@@ -324,6 +449,7 @@
     const title = state.topView === 'trash' ? '回收站' : state.topView === 'pending' ? '待处理图库' : selectedMember()?.displayName ?? '选择一个成员图库';
     $('libraryTitle').textContent=title;
     $('librarySub').textContent=state.topView==='trash'?`${items.length} 张已删除截图`:state.topView==='pending'?`${items.length} 张等待整理`:state.selectedPersonId?`${items.length} 张截图`:'';
+    $('sortLabel').textContent=(sortChoices().find(choice=>choice.value===(state.settings?.screenshotSort||'newest'))??sortChoices()[0]).label;
     $('centerSearch').placeholder=state.topView==='trash'?'搜索回收站中的文本或标签':state.topView==='pending'?'搜索待处理截图':'搜索当前图库中的文本或标签';
     const host=$('cards'); host.classList.toggle('list',viewMode==='list'); host.classList.toggle('selection-mode',selectionMode);
     if(!state.selectedPersonId && state.topView!=='pending' && state.topView!=='trash') {
@@ -413,15 +539,15 @@
   function renderAdd(){
     const host=$('add'),current=selectedMember();
     const importEngine=nextImportOcrEngine??state.settings?.ocrEngine??'None';
-    if(!draft){host.innerHTML=`<div class="panel-header"><h2>添加截图</h2></div><div class="ocr-quick"><label for="addOcrEngine">本次识别</label><select id="addOcrEngine">${ocrEngineOptions(importEngine)}</select></div><div class="dropzone" id="dropzone"><div><div class="dropicon">＋</div><b>拖入截图或选择本地文件</b><div class="or">支持多选 PNG、JPG、BMP、GIF</div><button class="btn" id="chooseImage">选择图片</button></div></div><div class="formrow"><button class="btn" id="clipboardImage" style="width:100%">从剪贴板读取图片</button></div><div class="formrow"><label>加入图库</label><div class="field" style="display:flex;align-items:center">${esc(current?.displayName||'请先选择成员图库')}</div><button class="btn" id="quickCreateMember" style="width:100%;margin-top:8px">＋ 新建成员图库</button></div><div class="pending-note">文本和标签都可以留空。单张图片可直接加入当前图库；批量导入会进入待处理。</div>`;
-      $('addOcrEngine').onchange=e=>{const engine=e.target.value;e.target.value=importEngine;requestOcrChange(engine,'next',null,false,()=>{nextImportOcrEngine=engine;});};
+    if(!draft){host.innerHTML=`<div class="panel-header"><h2>添加截图</h2></div><div class="ocr-quick"><label for="addOcrEngine">本次识别</label>${customSelectMarkup('addOcrEngine',ocrEngineChoices(),importEngine,'','选择本次 OCR 方式')}</div><div class="dropzone" id="dropzone"><div><div class="dropicon">＋</div><b>拖入截图或选择本地文件</b><div class="or">支持多选 PNG、JPG、BMP、GIF</div><button class="btn" id="chooseImage">选择图片</button></div></div><div class="formrow"><button class="btn" id="clipboardImage" style="width:100%">从剪贴板读取图片</button></div><div class="formrow"><label>加入图库</label><div class="field" style="display:flex;align-items:center">${esc(current?.displayName||'请先选择成员图库')}</div><button class="btn" id="quickCreateMember" style="width:100%;margin-top:8px">＋ 新建成员图库</button></div><div class="pending-note">文本和标签都可以留空。单张图片可直接加入当前图库；批量导入会进入待处理。</div>`;
+      bindCustomSelect('addOcrEngine',ocrEngineChoices(),engine=>requestOcrChange(engine,'next',null,false,()=>{nextImportOcrEngine=engine;renderAdd();}),false);
       $('chooseImage').onclick=()=>post('chooseImage',{engine:$('addOcrEngine').value,libraryId:current?.id||null});$('clipboardImage').onclick=()=>post('prepareClipboard',{engine:$('addOcrEngine').value});$('quickCreateMember').onclick=()=>openMemberModal();
       const dz=$('dropzone');['dragenter','dragover'].forEach(n=>dz.addEventListener(n,e=>{e.preventDefault();dz.style.borderColor='#444';}));['dragleave','drop'].forEach(n=>dz.addEventListener(n,e=>{e.preventDefault();dz.style.borderColor='';}));
       dz.addEventListener('drop',e=>readDroppedFiles([...e.dataTransfer.files].filter(f=>f.type.startsWith('image/')),$('addOcrEngine').value,current?.id||null));return;
     }
     const engineKey=draft.ocrEngineKey||state.settings?.ocrEngine||'None';
-    host.innerHTML=`<div class="panel-header"><h2>添加截图</h2><span class="muted">${esc(ocrSummary(draft.ocrEngine||'未使用 OCR',draft.confidence))}</span></div><div class="ocr-quick"><label for="draftOcrEngine">当前截图</label><select id="draftOcrEngine">${ocrEngineOptions(engineKey)}</select><button class="btn" id="rerunDraftOcr" ${engineKey==='None'?'disabled':''}>重新识别</button></div><div class="bigpreview"><img class="real-image" src="${esc(draft.dataUrl)}" alt="待添加截图"/></div><div class="section text-section"><div class="section-title">可搜索文本（可选）</div><textarea class="search-textarea" id="draftSearchText" placeholder="OCR 结果会显示在这里，也可以手动输入或留空">${esc(draft.searchText||'')}</textarea></div><div class="section"><div class="section-title">标签（可选，以逗号分隔）</div><input class="keyword-input" id="draftTags" value="${esc(draft.tags||'')}" placeholder="例如：加班，名场面"/></div><div class="section"><div class="section-title">加入图库</div><div class="chips">${current?`<span class="chip">${esc(current.displayName)}</span>`:'<span class="muted">未选择成员图库；可以先暂存</span>'}</div></div><div class="actions"><button class="btn" id="cancelDraft">取消</button><button class="btn" id="commitPending">暂存</button><button class="btn primary" id="commitCurrent" ${current?'':'disabled'}>加入图库</button></div>`;
-    $('draftOcrEngine').onchange=e=>{const engine=e.target.value;e.target.value=engineKey;requestOcrChange(engine,'draft',null,true,()=>{draft.tags=$('draftTags').value;});};
+    host.innerHTML=`<div class="panel-header"><h2>添加截图</h2><span class="muted">${esc(ocrSummary(draft.ocrEngine||'未使用 OCR',draft.confidence))}</span></div><div class="ocr-quick"><label for="draftOcrEngine">当前截图</label>${customSelectMarkup('draftOcrEngine',ocrEngineChoices(),engineKey,'','选择当前截图 OCR 方式')}<button class="btn" id="rerunDraftOcr" ${engineKey==='None'?'disabled':''}>重新识别</button></div><div class="bigpreview"><img class="real-image" src="${esc(draft.dataUrl)}" alt="待添加截图"/></div><div class="section text-section"><div class="section-title">可搜索文本（可选）</div><textarea class="search-textarea" id="draftSearchText" placeholder="OCR 结果会显示在这里，也可以手动输入或留空">${esc(draft.searchText||'')}</textarea></div><div class="section"><div class="section-title">标签（可选，以逗号分隔）</div><input class="keyword-input" id="draftTags" value="${esc(draft.tags||'')}" placeholder="例如：加班，名场面"/></div><div class="section"><div class="section-title">加入图库</div><div class="chips">${current?`<span class="chip">${esc(current.displayName)}</span>`:'<span class="muted">未选择成员图库；可以先暂存</span>'}</div></div><div class="actions"><button class="btn" id="cancelDraft">取消</button><button class="btn" id="commitPending">暂存</button><button class="btn primary" id="commitCurrent" ${current?'':'disabled'}>加入图库</button></div>`;
+    bindCustomSelect('draftOcrEngine',ocrEngineChoices(),engine=>requestOcrChange(engine,'draft',null,true,()=>{draft.tags=$('draftTags').value;}),false);
     $('rerunDraftOcr').onclick=()=>askConfirm('重新识别截图','重新识别会替换当前的可搜索文本，标签不会改变。是否继续？',()=>{draft.tags=$('draftTags').value;requestOcrChange(engineKey,'draft');},false,'重新识别');
     $('cancelDraft').onclick=()=>{draft=null;post('cancelDraft');renderAdd();};
     $('commitPending').onclick=()=>commitDraft(true,current);$('commitCurrent').onclick=()=>commitDraft(false,current);
@@ -444,11 +570,11 @@
     const engineKey=shot.ocrEngineKey||'None';
     if(editTargetScreenshotId!==shot.id){editTargetScreenshotId=shot.id;pendingTargetLibraryId=shot.libraryId||null;editDraftTags=null;editDraftSearchText=null;}
     const target=memberById(state.topView==='pending'?pendingTargetLibraryId:shot.libraryId);
-    host.innerHTML=`<div class="panel-header"><h2>${state.topView==='pending'?'继续处理截图':'编辑截图'}</h2><span class="muted">文本和标签均可留空</span></div><div class="ocr-quick"><label for="editOcrEngine">当前截图</label><select id="editOcrEngine">${ocrEngineOptions(engineKey)}</select><button class="btn" id="rerunOcr" ${engineKey==='None'?'disabled':''}>重新识别</button></div><div class="section text-section edit-text-section"><div class="section-title">可搜索文本（可选）</div><textarea class="search-textarea" id="editSearchText" placeholder="输入以后可能用于搜索这张截图的文字，也可以留空">${esc(editDraftSearchText??shot.searchText??'')}</textarea></div><div class="section"><div class="section-title">标签（可选，以逗号分隔）</div><input class="keyword-input" id="editTags" value="${esc(editDraftTags??(shot.tags||[]).join('，'))}" placeholder="例如：名场面，游戏"/></div>${state.topView==='pending'?`<div class="section"><div class="section-title">存放图库</div><button class="library-target" id="choosePendingLibrary"><span>${esc(target?.displayName||'选择成员图库')}</span><span>选择…</span></button></div>`:''}<div class="actions"><button class="btn" id="cancelEdit">取消</button><button class="btn primary" id="saveEdit" ${state.topView==='pending'&&!target?'disabled':''}>${state.topView==='pending'?'保存到图库':'保存修改'}</button></div>`;
+    host.innerHTML=`<div class="panel-header"><h2>${state.topView==='pending'?'继续处理截图':'编辑截图'}</h2><span class="muted">文本和标签均可留空</span></div><div class="ocr-quick"><label for="editOcrEngine">当前截图</label>${customSelectMarkup('editOcrEngine',ocrEngineChoices(),engineKey,'','选择当前截图 OCR 方式')}<button class="btn" id="rerunOcr" ${engineKey==='None'?'disabled':''}>重新识别</button></div><div class="section text-section edit-text-section"><div class="section-title">可搜索文本（可选）</div><textarea class="search-textarea" id="editSearchText" placeholder="输入以后可能用于搜索这张截图的文字，也可以留空">${esc(editDraftSearchText??shot.searchText??'')}</textarea></div><div class="section"><div class="section-title">标签（可选，以逗号分隔）</div><input class="keyword-input" id="editTags" value="${esc(editDraftTags??(shot.tags||[]).join('，'))}" placeholder="例如：名场面，游戏"/></div>${state.topView==='pending'?`<div class="section"><div class="section-title">存放图库</div><button class="library-target" id="choosePendingLibrary"><span>${esc(target?.displayName||'选择成员图库')}</span><span>选择…</span></button></div>`:''}<div class="actions"><button class="btn" id="cancelEdit">取消</button><button class="btn primary" id="saveEdit" ${state.topView==='pending'&&!target?'disabled':''}>${state.topView==='pending'?'保存到图库':'保存修改'}</button></div>`;
     $('editSearchText').oninput=()=>{editDirty=true;editDraftSearchText=$('editSearchText').value;};$('editTags').oninput=()=>{editDirty=true;editDraftTags=$('editTags').value;};
     $('cancelEdit').onclick=()=>{editDirty=false;editDraftTags=null;editDraftSearchText=null;setActivePanel('preview',true);};$('saveEdit').onclick=saveEdit;
     $('choosePendingLibrary')&&($('choosePendingLibrary').onclick=()=>chooseLibrary(pendingTargetLibraryId,id=>{editDraftSearchText=$('editSearchText').value;editDraftTags=$('editTags').value;pendingTargetLibraryId=id;editDirty=true;renderEdit();}));
-    $('editOcrEngine').onchange=e=>{const engine=e.target.value;e.target.value=engineKey;requestOcrChange(engine,'edit',shot.id,true,()=>{editDirty=false;editDraftSearchText=null;});};
+    bindCustomSelect('editOcrEngine',ocrEngineChoices(),engine=>requestOcrChange(engine,'edit',shot.id,true,()=>{editDirty=false;editDraftSearchText=null;}),false);
     $('rerunOcr').onclick=()=>askConfirm('重新识别截图','重新识别会替换当前的可搜索文本，标签不会改变。是否继续？',()=>{editDirty=false;editDraftSearchText=null;requestOcrChange(engineKey,'edit',shot.id);},false,'重新识别');
   }
   function saveEdit(){const shot=selectedScreenshot();post('saveEdit',{id:shot.id,libraryId:state.topView==='pending'?pendingTargetLibraryId:shot.libraryId,tags:keywords($('editTags').value),searchText:$('editSearchText').value});editDirty=false;pendingTargetLibraryId=null;editDraftTags=null;editDraftSearchText=null;}
@@ -457,22 +583,27 @@
     const s=state.settings||{},keys=[...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'].concat(Array.from({length:12},(_,i)=>`F${i+1}`));
     const selected=['None','PaddleOcrV6','Tesseract'].includes(s.ocrEngine)?s.ocrEngine:'None';
     const paddleStatus=s.paddleAvailable?'PaddleOCR 已安装，可直接使用':'PaddleOCR 尚未安装；切换时会先显示安装确认，不会自动下载';
-    $('settingsPage').innerHTML=`<h1>设置</h1><div class="settings-lead">管理 QuoteVault 的 OCR、快捷键、数据与备份。</div><div class="settings-card"><h2>默认 OCR 引擎</h2><p>仅作为以后添加截图时的默认值；添加和编辑页面可以为当前截图临时切换。PaddleOCR 运行环境与模型约占用 900 MB。</p><div class="ocr-row"><select id="ocrEngine">${ocrEngineOptions(selected)}</select><span class="muted">${paddleStatus}</span></div></div><div class="settings-card"><h2>全局收录快捷键</h2><p>按下快捷键后，将剪贴板图片静默加入待处理。</p><div class="hotkey-row"><label><input id="hotCtrl" type="checkbox" ${s.hotKeyCtrl?'checked':''}/>Ctrl</label><label><input id="hotAlt" type="checkbox" ${s.hotKeyAlt?'checked':''}/>Alt</label><label><input id="hotShift" type="checkbox" ${s.hotKeyShift?'checked':''}/>Shift</label><select id="hotKey">${keys.map(k=>`<option ${k===s.hotKey?'selected':''}>${k}</option>`).join('')}</select><button class="btn primary" id="saveHotKey">保存快捷键</button></div></div><div class="settings-card"><h2>数据与备份</h2><p>备份包含索引、群组、成员图库、可搜索文本、标签和全部原图。</p><div class="smallrow"><button class="btn" id="backupData">导出完整备份</button><button class="btn" id="restoreData">从备份恢复</button></div></div>`;
-    $('ocrEngine').onchange=e=>{const engine=e.target.value;e.target.value=selected;requestOcrChange(engine,'settings',null,false,()=>{nextImportOcrEngine=null;});};
+    const keyChoices=keys.map(key=>({value:key,label:key}));
+    $('settingsPage').innerHTML=`<h1>设置</h1><div class="settings-lead">管理 QuoteVault 的界面、OCR、快捷键、数据与备份。</div><div class="settings-card"><h2>界面与布局</h2><p>拖动主界面各区域之间的分隔线可以调整宽度，布局会自动保存。</p><div class="smallrow"><button class="btn" id="resetLayout">恢复默认布局</button><span class="muted">默认：左侧 ${layoutDefaults.sidebar}px，右侧 ${layoutDefaults.workbench}px</span></div></div><div class="settings-card"><h2>默认 OCR 引擎</h2><p>仅作为以后添加截图时的默认值；添加和编辑页面可以为当前截图临时切换。PaddleOCR 运行环境与模型约占用 900 MB。</p><div class="ocr-row">${customSelectMarkup('ocrEngine',ocrEngineChoices(),selected,'','选择默认 OCR 方式')}<span class="muted">${paddleStatus}</span></div></div><div class="settings-card"><h2>全局收录快捷键</h2><p>按下快捷键后，将剪贴板图片静默加入待处理。</p><div class="hotkey-row"><label><input id="hotCtrl" type="checkbox" ${s.hotKeyCtrl?'checked':''}/>Ctrl</label><label><input id="hotAlt" type="checkbox" ${s.hotKeyAlt?'checked':''}/>Alt</label><label><input id="hotShift" type="checkbox" ${s.hotKeyShift?'checked':''}/>Shift</label>${customSelectMarkup('hotKey',keyChoices,s.hotKey||'F8','compact','选择快捷键')}<button class="btn primary" id="saveHotKey">保存快捷键</button></div></div><div class="settings-card"><h2>数据与备份</h2><p>备份包含索引、群组、成员图库、可搜索文本、标签和全部原图。</p><div class="smallrow"><button class="btn" id="backupData">导出完整备份</button><button class="btn" id="restoreData">从备份恢复</button></div></div>`;
+    bindCustomSelect('ocrEngine',ocrEngineChoices(),engine=>requestOcrChange(engine,'settings',null,false,()=>{nextImportOcrEngine=null;}),false);
+    bindCustomSelect('hotKey',keyChoices);
     $('saveHotKey').onclick=()=>{
       if(!$('hotCtrl').checked&&!$('hotAlt').checked&&!$('hotShift').checked)return toast('至少选择一个修饰键。');
       post('saveHotKeySettings',{hotKeyCtrl:$('hotCtrl').checked,hotKeyAlt:$('hotAlt').checked,hotKeyShift:$('hotShift').checked,hotKey:$('hotKey').value});toast('快捷键已保存');
     };
+    $('resetLayout').onclick=()=>{applyLayoutSettings(layoutDefaults.sidebar,layoutDefaults.workbench);post('resetLayoutSettings');toast('已恢复默认布局。');};
     $('backupData').onclick=()=>post('createBackup');$('restoreData').onclick=()=>askConfirm('恢复备份','恢复会替换当前图库；操作前会自动创建安全备份。',()=>post('restoreBackup'));
   }
 
   function renderApp(){
-    ensureDynamicUi();const settings=state.topView==='settings';document.querySelector('.workspace').classList.toggle('settings-mode',settings);
+    ensureDynamicUi();applyLayoutSettings();const settings=state.topView==='settings';document.querySelector('.workspace').classList.toggle('settings-mode',settings);
     document.querySelectorAll('[data-top]').forEach(x=>x.classList.toggle('active',x.dataset.top===(settings?'settings':'library')));
     if(settings){closeFloating();renderSettings();return;} updateSearchClear('side');updateSearchClear('center');renderTree();renderCenter();renderWorkbench();
   }
 
   function bindStaticEvents(){
+    bindLayoutSplitter($('sidebarSplitter'),'sidebar');bindLayoutSplitter($('workbenchSplitter'),'workbench');
+    $('sortMenu').onclick=event=>{openSortMenu();event.stopPropagation();};
     document.querySelectorAll('.tab').forEach(tab=>tab.onclick=()=>setActivePanel(tab.dataset.panel));
     document.querySelectorAll('[data-top]').forEach(tab=>tab.onclick=()=>{resetSelectionMode();state.topView=tab.dataset.top;state.selectedScreenshotId=null;post('topViewChanged',{name:state.topView});renderApp();if(state.topView==='library')setActivePanel('preview',true);});
     $('trashNav').onclick=()=>{resetSelectionMode();state.topView='trash';state.selectedScreenshotId=null;post('topViewChanged',{name:'trash'});renderApp();setActivePanel('preview',true);};
@@ -492,6 +623,7 @@
     $('titlebar').ondblclick=e=>{if(!e.target.closest('.window-actions'))post('windowAction',{action:'maximize'});};
     document.addEventListener('pointerdown',e=>{if(!e.target.closest('.context-menu,.card-more,#managePeople'))closeFloating();});
     document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeFloating();document.querySelector('.modal-layer')?.remove();}});
+    window.addEventListener('resize',()=>{if(!layoutDrag)applyLayoutSettings();});
   }
 
   function setWindowIcon(mode){windowState=mode;const svg=$('maximizeWindow').querySelector('svg');svg.innerHTML=mode==='maximized'?'<rect x="5" y="3" width="8" height="8" rx="1"/><path d="M11 11v2H3V5h2"/>':'<rect x="3.25" y="3.25" width="9.5" height="9.5" rx="1"/>';}
