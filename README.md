@@ -76,7 +76,7 @@ QuoteVault 不在应用内下载 PaddleOCR。未安装时选择 PaddleOCR，软�
 
 #### 2. 打开 QuoteVault 所在文件夹
 
-解压 QuoteVault 发布包，然后进入包含 `QuoteVault.exe` 和 `paddleocr` 文件夹的目录。在文件夹空白处按住 `Shift` 并单击鼠标右键，选择“在终端中打开”或“在此处打开 PowerShell”。
+解压 QuoteVault 发布包，然后进入包含 `QuoteVault.exe` 和 `paddleocr` 文件夹的目录。在文件夹空白处单击鼠标右键，选择“在终端中打开”或“在此处打开 PowerShell”。
 
 也可以单击文件资源管理器顶部的地址栏，输入 `powershell` 后按回车。
 
