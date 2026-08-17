@@ -1,3 +1,5 @@
+using System.IO.Compression;
+
 namespace QuoteVault;
 
 internal static class SelfTest
@@ -25,22 +27,6 @@ internal static class SelfTest
         foreach (Control child in control.Controls) Dump(child, depth + 1);
     }
 
-    public static int RunOcr(string imagePath)
-    {
-        try
-        {
-            var result = new OcrService().RecognizeAsync(imagePath).GetAwaiter().GetResult();
-            Console.WriteLine($"CONFIDENCE={result.Confidence:P0}");
-            Console.WriteLine(result.RawText);
-            return string.IsNullOrWhiteSpace(result.RawText) ? 1 : 0;
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine(ex);
-            return 1;
-        }
-    }
-
     public static int RunPaddleOcr(string imagePath)
     {
         try
@@ -66,21 +52,41 @@ internal static class SelfTest
     {
         var root = Path.Combine(Path.GetTempPath(), "QuoteVaultSelfTest-" + Guid.NewGuid().ToString("N"));
         var backupRoot = Path.Combine(Path.GetTempPath(), "QuoteVaultBackupTest-" + Guid.NewGuid().ToString("N"));
+        var corruptRoot = Path.Combine(Path.GetTempPath(), "QuoteVaultCorruptTest-" + Guid.NewGuid().ToString("N"));
         try
         {
             var store = new AppStore(root);
             Assert(store.State.Settings.OcrEngine == "None", "新图库默认不启用 OCR");
+            Assert(store.State.Settings.Theme == "dark", "新图库默认使用深色主题");
+            Assert(store.State.Settings.HotKeyCtrl && store.State.Settings.HotKeyAlt &&
+                   store.State.Settings.HotKey == Keys.Q, "新图库使用 Ctrl+Alt+Q 默认快捷键");
             Assert(store.State.Settings.SidebarWidth == AppSettings.DefaultSidebarWidth, "左侧栏使用默认宽度");
             Assert(store.State.Settings.WorkbenchWidth == AppSettings.DefaultWorkbenchWidth, "工作区使用默认宽度");
             store.State.Settings.SidebarWidth = 312;
             store.State.Settings.WorkbenchWidth = 688;
             store.State.Settings.ScreenshotSort = "nameAsc";
+            store.State.Settings.ViewMode = "list";
+            store.State.Settings.Theme = "light";
+            store.State.Settings.CollapsedTreeNodes = ["__ungrouped__"];
+            store.State.Settings.HasWindowPlacement = true;
+            store.State.Settings.WindowX = 120;
+            store.State.Settings.WindowY = 80;
+            store.State.Settings.WindowWidth = 1280;
+            store.State.Settings.WindowHeight = 800;
             var category = new CategoryItem { Name = "大学" };
             var person = new PersonItem { DisplayName = "小明", CategoryIds = [category.Id] };
             store.State.Categories.Add(category);
             store.State.People.Add(person);
-            var image = new byte[] { 1, 2, 3, 4 };
+            byte[] image;
+            using (var bitmap = new Bitmap(12, 8))
+            using (var stream = new MemoryStream())
+            {
+                using (var graphics = Graphics.FromImage(bitmap)) graphics.Clear(Color.DarkSlateBlue);
+                bitmap.Save(stream, System.Drawing.Imaging.ImageFormat.Png);
+                image = stream.ToArray();
+            }
             var screenshot = store.AddImage(image, "test.png", ".png");
+            Assert(File.Exists(store.GetThumbnailFile(screenshot)), "导入时生成缩略图缓存");
             // 模拟 0.3.x 数据，验证启动时会迁移成“单一图库 + 可搜索文本 + 标签”。
             screenshot.PersonIds.Add(person.Id);
             screenshot.Messages.Add(new MessageItem
@@ -90,6 +96,11 @@ internal static class SelfTest
             });
             screenshot.Keywords.Add("名场面");
             screenshot.NeedsReview = false;
+            store.State.Settings.HotKeyCtrl = true;
+            store.State.Settings.HotKeyAlt = true;
+            store.State.Settings.HotKeyShift = false;
+            store.State.Settings.HotKey = Keys.F8;
+            store.State.Settings.OcrEngine = "Tesseract";
             store.State.SchemaVersion = 1;
             store.Save();
 
@@ -98,7 +109,14 @@ internal static class SelfTest
             Assert(reloaded.State.Settings.SidebarWidth == 312 && reloaded.State.Settings.WorkbenchWidth == 688,
                 "自定义布局持久化");
             Assert(reloaded.State.Settings.ScreenshotSort == "nameAsc", "截图排序方式持久化");
-            Assert(reloaded.State.SchemaVersion == 2, "数据升级到新版结构");
+            Assert(reloaded.State.Settings.ViewMode == "list" &&
+                   reloaded.State.Settings.CollapsedTreeNodes.SequenceEqual(["__ungrouped__"]), "视图偏好持久化");
+            Assert(reloaded.State.Settings.Theme == "light", "界面主题持久化");
+            Assert(reloaded.State.Settings.HasWindowPlacement && reloaded.State.Settings.WindowWidth == 1280,
+                "窗口位置持久化");
+            Assert(reloaded.State.SchemaVersion == 4, "数据升级到新版结构");
+            Assert(reloaded.State.Settings.HotKey == Keys.Q, "旧版默认快捷键迁移为 Ctrl+Alt+Q");
+            Assert(reloaded.State.Settings.OcrEngine == "None", "旧版 Tesseract 设置迁移为不使用 OCR");
             Assert(reloaded.State.Screenshots.Single().LibraryId == person.Id, "旧图库关系迁移");
             Assert(reloaded.State.Screenshots.Single().SearchText == "今晚打游戏吗？", "旧消息迁移为可搜索文本");
             Assert(reloaded.State.Screenshots.Single().Tags.SequenceEqual(["名场面"]), "旧关键词迁移为标签");
@@ -106,15 +124,6 @@ internal static class SelfTest
             reloaded.State.Screenshots.Single().SearchText = string.Empty;
             reloaded.Save();
             Assert(new AppStore(root).State.Screenshots.Single().SearchText == string.Empty, "允许清空可搜索文本");
-
-            var parsedChat = OcrService.SplitChatLines(["& 夕笔下若隐若现的", "越想越气（"]);
-            Assert(parsedChat.Messages.SequenceEqual(["越想越气（"]), "聊天界面噪声不会进入正文");
-            var wrappedMessage = OcrService.SplitChatLines(["& 小明 LV10", "这是同一条消息的第一行", "这是第二行"]);
-            Assert(wrappedMessage.Messages.SequenceEqual([$"这是同一条消息的第一行{Environment.NewLine}这是第二行"]),
-                "多行气泡合并为一条消息");
-            var plainWrappedMessage = OcrService.SplitChatLines(["没有昵称的第一行", "仍然属于同一条消息"]);
-            Assert(plainWrappedMessage.Messages.SequenceEqual([$"没有昵称的第一行{Environment.NewLine}仍然属于同一条消息"]),
-                "无昵称多行文本合并");
 
             Directory.CreateDirectory(backupRoot);
             var backup = Path.Combine(backupRoot, "backup.zip");
@@ -124,7 +133,22 @@ internal static class SelfTest
             store.Save();
             store.RestoreBackup(backup);
             Assert(store.State.People.Count == 1, "备份恢复");
+            Assert(File.Exists(store.GetThumbnailFile(store.State.Screenshots.Single())), "恢复后重建缩略图缓存");
             Assert(Directory.EnumerateFiles(Path.Combine(root, "backups"), "*.zip").Any(), "恢复前安全备份");
+            var invalidBackup = Path.Combine(backupRoot, "missing-image.zip");
+            File.Copy(backup, invalidBackup);
+            using (var archive = ZipFile.Open(invalidBackup, ZipArchiveMode.Update))
+                archive.Entries.First(x => x.FullName.StartsWith("images/", StringComparison.Ordinal)).Delete();
+            var beforeFailedRestore = store.State.People.Single().DisplayName;
+            AssertThrows<InvalidDataException>(() => store.RestoreBackup(invalidBackup), "缺少图片的备份会被拒绝");
+            Assert(store.State.People.Single().DisplayName == beforeFailedRestore &&
+                   File.Exists(store.GetImageFile(store.State.Screenshots.Single())), "无效备份不会改变当前图库");
+
+            Directory.CreateDirectory(corruptRoot);
+            File.WriteAllText(Path.Combine(corruptRoot, "data.json"), "{not-json");
+            var recovered = new AppStore(corruptRoot);
+            Assert(!string.IsNullOrWhiteSpace(recovered.LoadWarning), "索引损坏会产生明确警告");
+            Assert(Directory.EnumerateFiles(corruptRoot, "data.json.broken-*").Any(), "损坏索引会保留副本");
             AssertThrows<InvalidDataException>(() =>
                 store.GetImageFile(new ScreenshotItem { StoredFileName = "../escape.png" }), "截图文件名路径校验");
             Console.WriteLine("SELF-TEST PASSED");
@@ -139,6 +163,7 @@ internal static class SelfTest
         {
             DeleteDirectoryWithRetry(root);
             DeleteDirectoryWithRetry(backupRoot);
+            DeleteDirectoryWithRetry(corruptRoot);
         }
     }
 

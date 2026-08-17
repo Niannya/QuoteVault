@@ -4,7 +4,7 @@ namespace QuoteVault;
 
 public sealed class AppState
 {
-    public int SchemaVersion { get; set; } = 2;
+    public int SchemaVersion { get; set; } = 4;
     public List<CategoryItem> Categories { get; set; } = [];
     public List<PersonItem> People { get; set; } = [];
     public List<NicknameMapping> NicknameMappings { get; set; } = [];
@@ -73,18 +73,29 @@ public sealed class AppSettings
 {
     public const int DefaultSidebarWidth = 230;
     public const int DefaultWorkbenchWidth = 560;
+    public const int DefaultWindowWidth = 1440;
+    public const int DefaultWindowHeight = 900;
 
     public bool HotKeyCtrl { get; set; } = true;
     public bool HotKeyAlt { get; set; } = true;
     public bool HotKeyShift { get; set; }
-    public Keys HotKey { get; set; } = Keys.F8;
+    public Keys HotKey { get; set; } = Keys.Q;
     public string OcrEngine { get; set; } = "None";
     public bool HasExplicitOcrChoice { get; set; }
+    public string Theme { get; set; } = "dark";
     public int SidebarWidth { get; set; } = DefaultSidebarWidth;
     public int WorkbenchWidth { get; set; } = DefaultWorkbenchWidth;
     public string ScreenshotSort { get; set; } = "newest";
+    public string ViewMode { get; set; } = "grid";
+    public List<string> CollapsedTreeNodes { get; set; } = [];
+    public bool HasWindowPlacement { get; set; }
+    public int WindowX { get; set; }
+    public int WindowY { get; set; }
+    public int WindowWidth { get; set; } = DefaultWindowWidth;
+    public int WindowHeight { get; set; } = DefaultWindowHeight;
+    public bool WindowMaximized { get; set; }
 }
 
 public sealed record OcrOutput(string RawText, float Confidence, IReadOnlyList<string> Lines,
-    IReadOnlyList<string> NicknameCandidates, string Engine = "Tesseract",
+    IReadOnlyList<string> NicknameCandidates, string Engine = "未使用 OCR",
     IReadOnlyList<string?>? SpeakerNicknames = null);

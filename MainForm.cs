@@ -21,7 +21,6 @@ public sealed class MainForm : Form
     private const int DwmCornerRound = 2;
 
     private readonly AppStore _store;
-    private readonly OcrService _tesseractOcr = new();
     private readonly PaddleOcrService _paddleOcr = new();
     private readonly WebView2 _webView = new();
     private readonly JsonSerializerOptions _json = new()
@@ -38,6 +37,7 @@ public sealed class MainForm : Form
     private PendingDuplicateCommit? _pendingDuplicateCommit;
     private bool _hotKeyRegistered;
     private bool _webReady;
+    private string? _hotKeyRegistrationWarning;
 
     public MainForm() : this(new AppStore()) { }
 
@@ -51,6 +51,7 @@ public sealed class MainForm : Form
         MinimumSize = new Size(1120, 720);
         StartPosition = FormStartPosition.CenterScreen;
         KeyPreview = true;
+        RestoreWindowPlacement();
 
         _webView.Dock = DockStyle.Fill;
         _webView.DefaultBackgroundColor = Color.FromArgb(17, 18, 16);
@@ -66,6 +67,7 @@ public sealed class MainForm : Form
             UnregisterConfiguredHotKey();
             _paddleOcr.Dispose();
         };
+        FormClosing += (_, _) => SaveWindowPlacement();
         SizeChanged += async (_, _) =>
         {
             ApplyRoundedWindowChrome();
@@ -88,6 +90,38 @@ public sealed class MainForm : Form
         DwmSetWindowAttribute(Handle, DwmBorderColor, ref borderColor, sizeof(int));
     }
 
+    private void RestoreWindowPlacement()
+    {
+        var settings = _store.State.Settings;
+        if (!settings.HasWindowPlacement) return;
+        var saved = new Rectangle(settings.WindowX, settings.WindowY,
+            Math.Max(MinimumSize.Width, settings.WindowWidth),
+            Math.Max(MinimumSize.Height, settings.WindowHeight));
+        var visible = Screen.AllScreens.Any(screen =>
+        {
+            var intersection = Rectangle.Intersect(screen.WorkingArea, saved);
+            return intersection.Width >= 120 && intersection.Height >= 80;
+        });
+        if (!visible) return;
+        StartPosition = FormStartPosition.Manual;
+        Bounds = saved;
+        if (settings.WindowMaximized) WindowState = FormWindowState.Maximized;
+    }
+
+    private void SaveWindowPlacement()
+    {
+        var bounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
+        if (bounds.Width < MinimumSize.Width || bounds.Height < MinimumSize.Height) return;
+        var settings = _store.State.Settings;
+        settings.HasWindowPlacement = true;
+        settings.WindowX = bounds.X;
+        settings.WindowY = bounds.Y;
+        settings.WindowWidth = bounds.Width;
+        settings.WindowHeight = bounds.Height;
+        settings.WindowMaximized = WindowState == FormWindowState.Maximized;
+        _store.Save();
+    }
+
     private async Task InitializeWebViewAsync()
     {
         try
@@ -100,12 +134,15 @@ public sealed class MainForm : Form
                 "app.quotevault.local", uiPath, CoreWebView2HostResourceAccessKind.DenyCors);
             _webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
                 "images.quotevault.local", _store.ImagePath, CoreWebView2HostResourceAccessKind.DenyCors);
+            _webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                "thumbs.quotevault.local", _store.ThumbnailPath, CoreWebView2HostResourceAccessKind.DenyCors);
             _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
             _webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
             _webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
             _webView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
             _webView.Source = new Uri("https://app.quotevault.local/index.html");
-            RegisterConfiguredHotKey();
+            if (!RegisterConfiguredHotKey())
+                _hotKeyRegistrationWarning = $"全局快捷键 {DescribeConfiguredHotKey()} 注册失败，可能已被其他程序占用。请在设置中选择其他组合。";
         }
         catch (Exception ex)
         {
@@ -129,6 +166,11 @@ public sealed class MainForm : Form
                     _webReady = true;
                     await SendStateAsync("preview");
                     await InvokeWebAsync("setWindowState", WindowState == FormWindowState.Maximized ? "maximized" : "normal");
+                    if (!string.IsNullOrWhiteSpace(_store.LoadWarning))
+                        await InvokeWebAsync("showNotice", new { title = "索引读取失败", message = _store.LoadWarning });
+                    if (!string.IsNullOrWhiteSpace(_hotKeyRegistrationWarning))
+                        await InvokeWebAsync("showNotice", new { title = "快捷键不可用", message = _hotKeyRegistrationWarning });
+                    _ = WarmThumbnailCacheAsync();
                     break;
                 case "panelChanged":
                     if (payload.TryGetProperty("name", out var name)) _activePanel = name.GetString() ?? "preview";
@@ -198,6 +240,7 @@ public sealed class MainForm : Form
                     break;
                 case "saveHotKeySettings":
                     SaveHotKeySettings(payload);
+                    await InvokeWebAsync("showError", "快捷键已保存并生效。");
                     await SendStateAsync();
                     break;
                 case "saveLayoutSettings":
@@ -208,9 +251,16 @@ public sealed class MainForm : Form
                     ResetLayoutSettings();
                     await SendStateAsync();
                     break;
+                case "saveThemeSettings":
+                    SaveThemeSettings(payload);
+                    await SendStateAsync();
+                    break;
                 case "saveScreenshotSort":
                     SaveScreenshotSort(payload);
                     await SendStateAsync();
+                    break;
+                case "saveViewPreferences":
+                    SaveViewPreferences(payload);
                     break;
                 case "setOcrEngine":
                     await SetOcrEngineAsync(payload);
@@ -218,12 +268,14 @@ public sealed class MainForm : Form
                 case "installPaddleOcr":
                     await InstallPaddleOcrAsync(payload);
                     break;
+                case "uninstallPaddleOcr":
+                    await UninstallPaddleOcrAsync();
+                    break;
                 case "createBackup":
-                    CreateBackup();
+                    await CreateBackupAsync();
                     break;
                 case "restoreBackup":
-                    RestoreBackup();
-                    await SendStateAsync();
+                    if (await RestoreBackupAsync()) await SendStateAsync();
                     break;
                 case "batchAction":
                     BatchAction(payload);
@@ -320,7 +372,10 @@ public sealed class MainForm : Form
                 libraryId = x.LibraryId,
                 searchText = x.SearchText,
                 tags = x.Tags,
-                imageUrl = $"https://images.quotevault.local/{Uri.EscapeDataString(x.StoredFileName)}"
+                imageUrl = $"https://images.quotevault.local/{Uri.EscapeDataString(x.StoredFileName)}",
+                thumbnailUrl = File.Exists(_store.GetThumbnailFile(x))
+                    ? $"https://thumbs.quotevault.local/{Uri.EscapeDataString(Path.GetFileNameWithoutExtension(x.StoredFileName) + ".jpg")}"
+                    : $"https://images.quotevault.local/{Uri.EscapeDataString(x.StoredFileName)}"
             }),
             selectedPersonId = _selectedPersonId,
             selectedScreenshotId = _selectedScreenshotId,
@@ -334,10 +389,14 @@ public sealed class MainForm : Form
                 hotKey = _store.State.Settings.HotKey.ToString(),
                 ocrEngine = _store.State.Settings.OcrEngine,
                 paddleAvailable = _paddleOcr.IsFullyInstalled,
+                theme = _store.State.Settings.Theme,
                 sidebarWidth = _store.State.Settings.SidebarWidth,
                 workbenchWidth = _store.State.Settings.WorkbenchWidth,
-                screenshotSort = _store.State.Settings.ScreenshotSort
-            }
+                screenshotSort = _store.State.Settings.ScreenshotSort,
+                viewMode = _store.State.Settings.ViewMode,
+                collapsedTreeNodes = _store.State.Settings.CollapsedTreeNodes
+            },
+            appVersion = Application.ProductVersion
         };
         await InvokeWebAsync("setState", state);
     }
@@ -352,6 +411,19 @@ public sealed class MainForm : Form
     private Task ShowWebErrorAsync(string message) => InvokeWebAsync("showError", message);
     private Task SetWebBusyAsync(bool busy, string text) => InvokeWebAsync("setBusy", new object[] { busy, text });
 
+    private async Task WarmThumbnailCacheAsync()
+    {
+        try
+        {
+            var created = await Task.Run(_store.EnsureMissingThumbnails);
+            if (created > 0 && !IsDisposed && _webReady) await SendStateAsync();
+        }
+        catch
+        {
+            // 缩略图缓存失败时继续使用原图，不打断用户操作。
+        }
+    }
+
     private Task<OcrOutput> RecognizeAsync(string imagePath, string? engineOverride = null,
         CancellationToken cancellationToken = default)
     {
@@ -359,7 +431,6 @@ public sealed class MainForm : Form
         {
             "PaddleOcrV6" when _paddleOcr.IsFullyInstalled => _paddleOcr.RecognizeAsync(imagePath, cancellationToken),
             "PaddleOcrV6" => throw new InvalidOperationException("PaddleOCR 尚未安装，请先在设置中完成安装。"),
-            "Tesseract" => _tesseractOcr.RecognizeAsync(imagePath, cancellationToken),
             _ => Task.FromResult(new OcrOutput(string.Empty, 0, [string.Empty], [], "未使用 OCR"))
         };
     }
@@ -429,8 +500,10 @@ public sealed class MainForm : Form
         await SetWebBusyAsync(true, $"正在导入 {files.Count} 张截图…");
         var imported = 0;
         var skippedDuplicates = 0;
-        foreach (var file in files)
+        for (var index = 0; index < files.Count; index++)
         {
+            var file = files[index];
+            await SetWebBusyAsync(true, $"正在导入第 {index + 1}/{files.Count} 张截图…");
             ValidateImage(file.Bytes);
             var duplicate = _store.FindDuplicate(AppStore.ComputeSha256(file.Bytes));
             if (duplicate is not null)
@@ -440,7 +513,7 @@ public sealed class MainForm : Form
             }
 
             var extension = NormalizeExtension(file.Extension);
-            var item = _store.AddImage(file.Bytes, file.Name, extension);
+            var item = _store.AddImage(file.Bytes, file.Name, extension, false);
             item.NeedsReview = true;
             if (libraryId.HasValue && _store.State.People.Any(x => x.Id == libraryId.Value))
             {
@@ -517,7 +590,7 @@ public sealed class MainForm : Form
             return;
         }
 
-        var item = _store.AddImage(_draft.Bytes, _draft.Name, _draft.Extension);
+        var item = _store.AddImage(_draft.Bytes, _draft.Name, _draft.Extension, false);
         item.OcrRawText = _draft.Ocr.RawText;
         item.OcrConfidence = _draft.Ocr.Confidence;
         item.OcrEngine = _draft.Ocr.Engine;
@@ -634,12 +707,12 @@ public sealed class MainForm : Form
     private void RestoreFromTrash(Guid? id)
     {
         var item = _store.State.Screenshots.FirstOrDefault(x => x.Id == id) ?? throw new FileNotFoundException("截图不存在。");
-        _store.RestoreFromTrash(item);
+        _store.RestoreFromTrash(item, false);
         if (!item.LibraryId.HasValue)
         {
             item.NeedsReview = true;
-            _store.Save();
         }
+        _store.Save();
         _selectedScreenshotId = null;
     }
 
@@ -668,6 +741,9 @@ public sealed class MainForm : Form
         var group = _store.State.Categories.FirstOrDefault(x => x.Id == id) ?? throw new InvalidDataException("群组不存在。");
         var name = payload.GetProperty("name").GetString()?.Trim();
         if (string.IsNullOrWhiteSpace(name)) throw new InvalidDataException("群组名称不能为空。");
+        if (_store.State.Categories.Any(x => x.Id != group.Id && x.ParentId == group.ParentId &&
+                                             string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException("同一级中已经存在同名群组。");
         group.Name = name;
         _store.Save();
     }
@@ -774,13 +850,27 @@ public sealed class MainForm : Form
     {
         var keyText = payload.GetProperty("hotKey").GetString();
         if (!Enum.TryParse<Keys>(keyText, true, out var key) ||
-            !(key is >= Keys.A and <= Keys.Z || key is >= Keys.F1 and <= Keys.F12)) key = Keys.F8;
-        _store.State.Settings.HotKeyCtrl = payload.GetProperty("hotKeyCtrl").GetBoolean();
-        _store.State.Settings.HotKeyAlt = payload.GetProperty("hotKeyAlt").GetBoolean();
-        _store.State.Settings.HotKeyShift = payload.GetProperty("hotKeyShift").GetBoolean();
-        _store.State.Settings.HotKey = key;
+            !(key is >= Keys.A and <= Keys.Z || key is >= Keys.D0 and <= Keys.D9 || key is >= Keys.F1 and <= Keys.F12))
+            throw new InvalidDataException("快捷键只支持字母、数字或 F1–F12。");
+        var settings = _store.State.Settings;
+        var previous = (settings.HotKeyCtrl, settings.HotKeyAlt, settings.HotKeyShift, settings.HotKey);
+        settings.HotKeyCtrl = payload.GetProperty("hotKeyCtrl").GetBoolean();
+        settings.HotKeyAlt = payload.GetProperty("hotKeyAlt").GetBoolean();
+        settings.HotKeyShift = payload.GetProperty("hotKeyShift").GetBoolean();
+        if (!settings.HotKeyCtrl && !settings.HotKeyAlt && !settings.HotKeyShift)
+        {
+            (settings.HotKeyCtrl, settings.HotKeyAlt, settings.HotKeyShift, settings.HotKey) = previous;
+            throw new InvalidDataException("快捷键至少需要 Ctrl、Alt 或 Shift 中的一项。");
+        }
+        settings.HotKey = key;
+        if (!RegisterConfiguredHotKey())
+        {
+            (settings.HotKeyCtrl, settings.HotKeyAlt, settings.HotKeyShift, settings.HotKey) = previous;
+            RegisterConfiguredHotKey();
+            throw new InvalidOperationException("快捷键注册失败，可能已被其他程序占用。原快捷键保持不变。");
+        }
+        _hotKeyRegistrationWarning = null;
         _store.Save();
-        RegisterConfiguredHotKey();
     }
 
     private async Task SetOcrEngineAsync(JsonElement payload)
@@ -810,10 +900,30 @@ public sealed class MainForm : Form
         _store.Save();
     }
 
+    private void SaveThemeSettings(JsonElement payload)
+    {
+        _store.State.Settings.Theme = payload.TryGetProperty("theme", out var value) && value.GetString() == "light"
+            ? "light"
+            : "dark";
+        _store.Save();
+    }
+
     private void SaveScreenshotSort(JsonElement payload)
     {
         var value = payload.TryGetProperty("value", out var property) ? property.GetString() : null;
         _store.State.Settings.ScreenshotSort = value is "oldest" or "nameAsc" or "nameDesc" ? value : "newest";
+        _store.Save();
+    }
+
+    private void SaveViewPreferences(JsonElement payload)
+    {
+        var settings = _store.State.Settings;
+        if (payload.TryGetProperty("viewMode", out var mode))
+            settings.ViewMode = mode.GetString() == "list" ? "list" : "grid";
+        if (payload.TryGetProperty("collapsedTreeNodes", out var nodes) && nodes.ValueKind == JsonValueKind.Array)
+            settings.CollapsedTreeNodes = nodes.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String)
+                .Select(x => x.GetString() ?? string.Empty)
+                .Where(x => x == "__ungrouped__" || Guid.TryParse(x, out _)).Distinct().ToList();
         _store.Save();
     }
 
@@ -825,7 +935,7 @@ public sealed class MainForm : Form
     }
 
     private static string ReadOcrEngine(JsonElement payload) =>
-        payload.TryGetProperty("engine", out var engine) && engine.GetString() is "PaddleOcrV6" or "Tesseract"
+        payload.TryGetProperty("engine", out var engine) && engine.GetString() == "PaddleOcrV6"
             ? engine.GetString()!
             : "None";
 
@@ -848,46 +958,89 @@ public sealed class MainForm : Form
 
     private async Task InstallPaddleOcrAsync(JsonElement payload)
     {
-        await SetWebBusyAsync(true, "正在安装 PaddleOCR 运行环境与模型，这可能需要几分钟…");
-        var scriptPath = Path.Combine(AppContext.BaseDirectory, "paddleocr", "setup-runtime.ps1");
-        if (!File.Exists(scriptPath)) throw new FileNotFoundException("找不到 PaddleOCR 安装脚本。", scriptPath);
-
-        var startInfo = new ProcessStartInfo("powershell.exe")
+        try
         {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardOutputEncoding = System.Text.Encoding.UTF8,
-            StandardErrorEncoding = System.Text.Encoding.UTF8
-        };
-        startInfo.ArgumentList.Add("-NoProfile");
-        startInfo.ArgumentList.Add("-ExecutionPolicy");
-        startInfo.ArgumentList.Add("Bypass");
-        startInfo.ArgumentList.Add("-File");
-        startInfo.ArgumentList.Add(scriptPath);
-        startInfo.ArgumentList.Add("-DownloadModels");
+            var scriptPath = Path.Combine(AppContext.BaseDirectory, "paddleocr", "setup-runtime.ps1");
+            if (!File.Exists(scriptPath)) throw new FileNotFoundException("找不到 PaddleOCR 安装脚本。", scriptPath);
 
-        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 PaddleOCR 安装程序。");
-        var outputTask = process.StandardOutput.ReadToEndAsync();
-        var errorTask = process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync();
-        var output = await outputTask;
-        var error = await errorTask;
-        if (process.ExitCode != 0)
-            throw new InvalidOperationException("PaddleOCR 安装失败。\n" +
-                                                (string.IsNullOrWhiteSpace(error) ? output : error).Trim());
-        if (!_paddleOcr.IsFullyInstalled)
-            throw new InvalidOperationException("安装程序已结束，但 PaddleOCR 运行环境或模型不完整。");
+            var startInfo = new ProcessStartInfo("powershell.exe")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
+                StandardErrorEncoding = System.Text.Encoding.UTF8
+            };
+            startInfo.ArgumentList.Add("-NoProfile");
+            startInfo.ArgumentList.Add("-ExecutionPolicy");
+            startInfo.ArgumentList.Add("Bypass");
+            startInfo.ArgumentList.Add("-File");
+            startInfo.ArgumentList.Add(scriptPath);
+            startInfo.ArgumentList.Add("-DownloadModels");
 
-        var target = payload.TryGetProperty("target", out var targetValue) ? targetValue.GetString() : "settings";
-        if (target == "settings") SaveOcrEngine("PaddleOcrV6");
-        await CompleteOcrEngineChangeAsync(payload, "PaddleOcrV6");
-        await SetWebBusyAsync(false, string.Empty);
-        await ShowWebErrorAsync("PaddleOCR 已安装并启用。");
+            using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 PaddleOCR 安装程序。");
+            var output = new System.Text.StringBuilder();
+            var error = new System.Text.StringBuilder();
+            process.ErrorDataReceived += (_, args) =>
+            {
+                if (!string.IsNullOrWhiteSpace(args.Data)) lock (error) error.AppendLine(args.Data);
+            };
+            process.BeginErrorReadLine();
+            while (await process.StandardOutput.ReadLineAsync() is { } line)
+            {
+                output.AppendLine(line);
+                if (TryReadPaddleProgress(line, out var progress, out var text))
+                    await InvokeWebAsync("updatePaddleInstallProgress", new { progress, text });
+            }
+            await process.WaitForExitAsync();
+            if (process.ExitCode != 0)
+                throw new InvalidOperationException("PaddleOCR 安装失败。\n" +
+                                                    (error.Length == 0 ? output : error).ToString().Trim());
+            if (!_paddleOcr.IsFullyInstalled)
+                throw new InvalidOperationException("安装程序已结束，但 PaddleOCR 运行环境或模型不完整。");
+
+            var target = payload.TryGetProperty("target", out var targetValue) ? targetValue.GetString() : "settings";
+            if (target == "settings") SaveOcrEngine("PaddleOcrV6");
+            await CompleteOcrEngineChangeAsync(payload, "PaddleOcrV6");
+            await InvokeWebAsync("completePaddleInstall");
+        }
+        catch (Exception ex)
+        {
+            await InvokeWebAsync("failPaddleInstall", new { message = ex.Message });
+        }
     }
 
-    private void CreateBackup()
+    private static bool TryReadPaddleProgress(string line, out int progress, out string text)
+    {
+        const string prefix = "QUOTEVault_PROGRESS:";
+        progress = 0;
+        text = string.Empty;
+        if (!line.StartsWith(prefix, StringComparison.Ordinal)) return false;
+        var parts = line[prefix.Length..].Split(':', 2);
+        if (parts.Length != 2 || !int.TryParse(parts[0], out progress)) return false;
+        progress = Math.Clamp(progress, 0, 100);
+        text = parts[1];
+        return true;
+    }
+
+    private async Task UninstallPaddleOcrAsync()
+    {
+        await SetWebBusyAsync(true, "正在删除 PaddleOCR…");
+        try
+        {
+            await _paddleOcr.UninstallAsync();
+            if (_store.State.Settings.OcrEngine == "PaddleOcrV6") SaveOcrEngine("None");
+            await SendStateAsync();
+            await InvokeWebAsync("showNotice", new { title = "PaddleOCR 已删除", message = "运行环境和识别模型已从本机移除。" });
+        }
+        finally
+        {
+            await SetWebBusyAsync(false, string.Empty);
+        }
+    }
+
+    private async Task CreateBackupAsync()
     {
         using var dialog = new SaveFileDialog
         {
@@ -895,13 +1048,42 @@ public sealed class MainForm : Form
             Filter = "QuoteVault 备份|*.zip",
             FileName = $"QuoteVault-backup-{DateTime.Now:yyyyMMdd-HHmmss}.zip"
         };
-        if (dialog.ShowDialog(this) == DialogResult.OK) _store.CreateBackup(dialog.FileName);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        await SetWebBusyAsync(true, "正在创建完整备份…");
+        try
+        {
+            await Task.Run(() => _store.CreateBackup(dialog.FileName));
+            await InvokeWebAsync("showError", "备份已创建。");
+        }
+        finally
+        {
+            await SetWebBusyAsync(false, string.Empty);
+        }
     }
 
-    private void RestoreBackup()
+    private async Task<bool> RestoreBackupAsync()
     {
         using var dialog = new OpenFileDialog { Title = "选择 QuoteVault 备份", Filter = "QuoteVault 备份|*.zip" };
-        if (dialog.ShowDialog(this) == DialogResult.OK) _store.RestoreBackup(dialog.FileName);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return false;
+        var confirmed = MessageBox.Show(this,
+            "恢复备份将替换当前图库。QuoteVault 会先自动创建一份恢复前备份。\n\n确定继续吗？",
+            "恢复完整备份", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) == DialogResult.OK;
+        if (!confirmed) return false;
+        await SetWebBusyAsync(true, "正在验证并恢复备份…");
+        try
+        {
+            await Task.Run(() => _store.RestoreBackup(dialog.FileName));
+            _selectedPersonId = null;
+            _selectedScreenshotId = null;
+            _topView = "library";
+            _activePanel = "preview";
+            await InvokeWebAsync("showError", "备份恢复完成。");
+            return true;
+        }
+        finally
+        {
+            await SetWebBusyAsync(false, string.Empty);
+        }
     }
 
     private void BatchAction(JsonElement payload)
@@ -909,9 +1091,17 @@ public sealed class MainForm : Form
         var ids = ReadStringList(payload, "ids")
             .Select(x => Guid.TryParse(x, out var id) ? id : Guid.Empty).Where(x => x != Guid.Empty).ToHashSet();
         var action = payload.GetProperty("action").GetString();
-        foreach (var item in _store.State.Screenshots.Where(x => ids.Contains(x.Id)).ToList())
+        var tags = action == "addTags" ? NormalizeTags(ReadStringList(payload, "tags")) : [];
+        var selected = _store.State.Screenshots.Where(x => ids.Contains(x.Id)).ToList();
+        if (action == "deleteForever")
         {
-            if (action == "trash") _store.MoveToTrash(item);
+            _store.PermanentlyDeleteMany(selected);
+            _selectedScreenshotId = null;
+            return;
+        }
+        foreach (var item in selected)
+        {
+            if (action == "trash") _store.MoveToTrash(item, false);
             else if (action == "pending")
             {
                 item.DeletedAt = null;
@@ -919,10 +1109,10 @@ public sealed class MainForm : Form
             }
             else if (action == "restore")
             {
-                _store.RestoreFromTrash(item);
+                _store.RestoreFromTrash(item, false);
                 if (!item.LibraryId.HasValue) item.NeedsReview = true;
             }
-            else if (action == "deleteForever") _store.PermanentlyDelete(item);
+            else if (action == "addTags") item.Tags = NormalizeTags(item.Tags.Concat(tags));
         }
         _store.Save();
         _selectedScreenshotId = null;
@@ -951,7 +1141,7 @@ public sealed class MainForm : Form
         using var stream = new MemoryStream();
         image.Save(stream, ImageFormat.Png);
         var bytes = stream.ToArray();
-        var item = _store.AddImage(bytes, $"剪贴板-{DateTime.Now:yyyyMMdd-HHmmss}.png", ".png");
+        var item = _store.AddImage(bytes, $"剪贴板-{DateTime.Now:yyyyMMdd-HHmmss}.png", ".png", false);
         try
         {
             var output = await RecognizeAsync(_store.GetImageFile(item));
@@ -976,7 +1166,7 @@ public sealed class MainForm : Form
         await SendStateAsync("preview");
     }
 
-    private void RegisterConfiguredHotKey()
+    private bool RegisterConfiguredHotKey()
     {
         UnregisterConfiguredHotKey();
         var settings = _store.State.Settings;
@@ -985,6 +1175,20 @@ public sealed class MainForm : Form
         if (settings.HotKeyCtrl) modifiers |= 0x0002;
         if (settings.HotKeyShift) modifiers |= 0x0004;
         _hotKeyRegistered = RegisterHotKey(Handle, HotKeyId, modifiers | 0x4000, (uint)settings.HotKey);
+        return _hotKeyRegistered;
+    }
+
+    private string DescribeConfiguredHotKey()
+    {
+        var settings = _store.State.Settings;
+        var parts = new List<string>();
+        if (settings.HotKeyCtrl) parts.Add("Ctrl");
+        if (settings.HotKeyAlt) parts.Add("Alt");
+        if (settings.HotKeyShift) parts.Add("Shift");
+        parts.Add(settings.HotKey is >= Keys.D0 and <= Keys.D9
+            ? ((int)settings.HotKey - (int)Keys.D0).ToString()
+            : settings.HotKey.ToString());
+        return string.Join("+", parts);
     }
 
     private void UnregisterConfiguredHotKey()
@@ -1068,7 +1272,7 @@ public sealed class MainForm : Form
     private static string? ReadOptionalOcrEngine(JsonElement payload)
     {
         if (payload.ValueKind == JsonValueKind.Undefined || !payload.TryGetProperty("engine", out var value)) return null;
-        return value.GetString() is "PaddleOcrV6" or "Tesseract" or "None" ? value.GetString() : null;
+        return value.GetString() is "PaddleOcrV6" or "None" ? value.GetString() : null;
     }
 
     private static string NormalizeSearchText(string? value) =>

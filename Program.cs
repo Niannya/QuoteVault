@@ -9,8 +9,6 @@ static class Program
         Console.InputEncoding = System.Text.Encoding.UTF8;
         if (args.Contains("--self-test", StringComparer.OrdinalIgnoreCase))
             return SelfTest.Run();
-        if (args.Length == 2 && args[0].Equals("--ocr-test", StringComparison.OrdinalIgnoreCase))
-            return SelfTest.RunOcr(args[1]);
         if (args.Length == 2 && args[0].Equals("--paddle-ocr-test", StringComparison.OrdinalIgnoreCase))
             return SelfTest.RunPaddleOcr(args[1]);
         if (args.Contains("--layout-test", StringComparer.OrdinalIgnoreCase))

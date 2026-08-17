@@ -12,6 +12,8 @@ public sealed class PaddleOcrService : IDisposable
     private Process? _worker;
 
     public string PythonPath { get; }
+    public string RuntimePath { get; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "QuoteVault", "paddle-runtime");
     public string WorkerPath { get; } = Path.Combine(AppContext.BaseDirectory, "paddleocr", "paddle_worker.py");
     public string ModelsPath { get; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "QuoteVault", "paddle-models");
@@ -23,14 +25,13 @@ public sealed class PaddleOcrService : IDisposable
     public PaddleOcrService()
     {
         PythonPath = Environment.GetEnvironmentVariable("QUOTEVault_PaddlePython")
-                     ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                         "QuoteVault", "paddle-runtime", "Scripts", "python.exe");
+                     ?? Path.Combine(RuntimePath, "Scripts", "python.exe");
     }
 
     public async Task<OcrOutput> RecognizeAsync(string imagePath, CancellationToken cancellationToken = default)
     {
         if (!IsAvailable)
-            throw new InvalidOperationException("PaddleOCR 实验运行环境尚未安装。请运行 paddleocr\\setup-runtime.ps1。");
+            throw new InvalidOperationException("PaddleOCR 运行环境尚未安装。请先在 QuoteVault 设置中安装。");
         if (!File.Exists(imagePath)) throw new FileNotFoundException("找不到待识别图片。", imagePath);
 
         await _gate.WaitAsync(cancellationToken);
@@ -128,6 +129,32 @@ public sealed class PaddleOcrService : IDisposable
         }
         _worker.Dispose();
         _worker = null;
+    }
+
+    public async Task UninstallAsync()
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            StopWorker();
+            await Task.Run(() =>
+            {
+                DeleteDirectory(RuntimePath);
+                DeleteDirectory(ModelsPath);
+            });
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private static void DeleteDirectory(string path)
+    {
+        if (!Directory.Exists(path)) return;
+        foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+            File.SetAttributes(file, FileAttributes.Normal);
+        Directory.Delete(path, true);
     }
 
     public void Dispose()
