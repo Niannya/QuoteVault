@@ -48,6 +48,8 @@
   };
   const checkSvg = '<svg viewBox="0 0 16 16"><path d="m3.5 8.2 2.8 2.8 6.2-6.2"/></svg>';
   const moreSvg = '<svg viewBox="0 0 18 18" width="17" height="17" fill="currentColor"><circle cx="4" cy="9" r="1.2"/><circle cx="9" cy="9" r="1.2"/><circle cx="14" cy="9" r="1.2"/></svg>';
+  const gridSvg = '<svg viewBox="0 0 18 18" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="2.5" width="5" height="5" rx="1"/><rect x="10.5" y="2.5" width="5" height="5" rx="1"/><rect x="2.5" y="10.5" width="5" height="5" rx="1"/><rect x="10.5" y="10.5" width="5" height="5" rx="1"/></svg>';
+  const listSvg = '<svg viewBox="0 0 18 18" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 4h2M8 4h7M3 9h2M8 9h7M3 14h2M8 14h7"/></svg>';
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
   function applyTheme(value) {
@@ -147,7 +149,7 @@
       const button = document.createElement('button');
       button.id = 'batchMode'; button.className = 'iconbtn'; button.title = '批量选择'; button.setAttribute('aria-label','批量选择');
       button.innerHTML = '<svg viewBox="0 0 18 18" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="2.5" width="13" height="13" rx="3"/><path d="m5.5 9 2.2 2.2 4.8-5"/></svg>';
-      toolbar.insertBefore(button, $('gridView'));
+      toolbar.insertBefore(button, $('viewToggle'));
       button.addEventListener('click', toggleSelectionMode);
     }
     if (!$('batchbar')) {
@@ -207,7 +209,23 @@
 
   function closeFloating() {
     document.querySelector('.context-menu')?.remove();
+    document.querySelector('.app-tooltip')?.remove();
     document.querySelectorAll('[aria-expanded="true"]').forEach(node => node.setAttribute('aria-expanded','false'));
+  }
+
+  function showTooltip(anchor, message) {
+    document.querySelector('.app-tooltip')?.remove();
+    if (!message) return;
+    const tooltip = document.createElement('div');
+    tooltip.className = 'app-tooltip';
+    tooltip.textContent = message;
+    document.body.append(tooltip);
+    const anchorRect = anchor.getBoundingClientRect();
+    const tooltipRect = tooltip.getBoundingClientRect();
+    const left = Math.max(10, Math.min(innerWidth - tooltipRect.width - 10, anchorRect.left + (anchorRect.width - tooltipRect.width) / 2));
+    let top = anchorRect.bottom + 8;
+    if (top + tooltipRect.height > innerHeight - 10) top = anchorRect.top - tooltipRect.height - 8;
+    Object.assign(tooltip.style, { left: `${left}px`, top: `${top}px` });
   }
 
   function showMenu(x, y, items, minimumWidth = 176) {
@@ -217,7 +235,7 @@
     menu.style.minWidth = `${minimumWidth}px`;
     menu.innerHTML = items.map((item, i) => item.separator
       ? `<div class="separator"></div>`
-      : `<button data-menu="${i}" class="${item.danger ? 'danger' : ''}"${item.tooltip?` title="${esc(item.tooltip)}"`:''}>${item.checked===undefined?'':`<span class="menu-check">${item.checked?checkSvg:''}</span>`}<span>${esc(item.label)}</span></button>`).join('');
+      : `<button data-menu="${i}" class="${item.danger ? 'danger' : ''}"${item.tooltip?` data-tooltip="${esc(item.tooltip)}"`:''}>${item.checked===undefined?'':`<span class="menu-check">${item.checked?checkSvg:''}</span>`}<span>${esc(item.label)}</span></button>`).join('');
     document.body.append(menu);
     menu.querySelectorAll('[data-menu]').forEach(button => button.addEventListener('click', event => {
       event.stopPropagation();
@@ -255,13 +273,13 @@
 
   function customSelectMarkup(id, options, selected, className = '', ariaLabel = '选择选项') {
     const current=options.find(option=>option.value===selected)??options[0];
-    return `<button type="button" class="custom-select ${className}" id="${id}" value="${esc(current.value)}" aria-label="${esc(ariaLabel)}" aria-haspopup="menu" aria-expanded="false"${current.tooltip?` title="${esc(current.tooltip)}"`:''}><span>${esc(current.label)}</span><svg viewBox="0 0 14 14"><path d="m3.5 5.25 3.5 3.5 3.5-3.5"/></svg></button>`;
+    return `<button type="button" class="custom-select ${className}" id="${id}" value="${esc(current.value)}" aria-label="${esc(ariaLabel)}" aria-haspopup="menu" aria-expanded="false"${current.tooltip?` data-tooltip="${esc(current.tooltip)}"`:''}><span>${esc(current.label)}</span><svg viewBox="0 0 14 14"><path d="m3.5 5.25 3.5 3.5 3.5-3.5"/></svg></button>`;
   }
 
   function setCustomSelectValue(button, option) {
     button.value=option.value;
     button.querySelector('span').textContent=option.label;
-    if(option.tooltip)button.title=option.tooltip;else button.removeAttribute('title');
+    if(option.tooltip)button.dataset.tooltip=option.tooltip;else delete button.dataset.tooltip;
   }
 
   function bindCustomSelect(id, options, onChange, commitSelection = true) {
@@ -329,44 +347,17 @@
     stopHotkeyCapture=()=>finish(true);
   }
 
-  function showPaddleInstallPrompt(payload, onAccepted) {
-    modal(`<h2>安装 PaddleOCR</h2><p>PaddleOCR 是可选的本地 OCR，适合识别中文和复杂聊天截图。</p><div class="install-facts"><div><b>预计空间</b><span>约 900 MB</span></div><div><b>安装内容</b><span>独立运行环境与中文识别模型</span></div><div><b>前置条件</b><span>Windows 已安装 Python 3.10</span></div><div><b>数据处理</b><span>识别在本机完成，不上传截图</span></div><div><b>安装位置</b><span>%LocalAppData%\\QuoteVault</span></div></div><div class="modal-actions"><button class="btn" data-cancel>取消</button><button class="btn primary" data-install>安装</button></div>`,layer=>{
-      layer.querySelector('[data-install]').onclick=()=>{
-        onAccepted?.();
-        showPaddleInstallProgress();
-        post('installPaddleOcr',payload);
-      };
+  function showPaddleGuidePrompt() {
+    modal(`<h2>获取 PaddleOCR</h2><p>PaddleOCR 是可选的本地 OCR。请前往 QuoteVault 的 GitHub 页面查看安装说明与下载方式。</p><div class="install-facts"><div><b>预计空间</b><span>约 900 MB</span></div><div><b>识别能力</b><span>适合中文和复杂聊天截图</span></div><div><b>数据处理</b><span>安装后在本机识别，不上传截图</span></div></div><div class="modal-actions"><button class="btn" data-cancel>取消</button><button class="btn primary" data-open-guide>打开 GitHub</button></div>`,layer=>{
+      layer.querySelector('[data-open-guide]').onclick=()=>{layer.remove();post('openPaddleOcrGuide');};
     });
-  }
-
-  function showPaddleInstallProgress() {
-    const layer=modal(`<h2>正在安装 PaddleOCR</h2><p id="paddleProgressText">正在准备安装…</p><div class="install-progress" role="progressbar" aria-label="PaddleOCR 安装进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="paddleProgressBar"></div></div><div class="install-progress-value" id="paddleProgressValue">0%</div>`);
-    layer.classList.add('locked');
-  }
-
-  function updatePaddleInstallProgress(info) {
-    const value=Math.max(0,Math.min(100,Number(info?.progress)||0));
-    const bar=$('paddleProgressBar'),progress=bar?.parentElement;
-    if(!bar||!progress)return;
-    bar.style.width=`${value}%`;
-    progress.setAttribute('aria-valuenow',String(value));
-    $('paddleProgressValue').textContent=`${value}%`;
-    if(info?.text)$('paddleProgressText').textContent=info.text;
-  }
-
-  function completePaddleInstall() {
-    modal(`<div class="completion-icon">${checkSvg}</div><h2>安装完成</h2><p>PaddleOCR 已安装并启用，现在可以在添加和编辑截图时使用。</p><div class="modal-actions"><button class="btn primary" data-cancel>完成</button></div>`);
-  }
-
-  function failPaddleInstall(info) {
-    modal(`<h2>PaddleOCR 安装失败</h2><p style="white-space:pre-wrap;line-height:1.7">${esc(info?.message||'安装过程中发生未知错误。')}</p><div class="modal-actions"><button class="btn primary" data-cancel>关闭</button></div>`);
   }
 
   function requestOcrChange(engine, target='settings', id=null, confirmOverwrite=false, onAccepted=null) {
     const payload={engine,target,id};
     const apply=()=>{
       if(engine==='PaddleOcrV6'&&!state.settings?.paddleAvailable){
-        showPaddleInstallPrompt(payload,onAccepted);
+        showPaddleGuidePrompt();
       } else {onAccepted?.();post('setOcrEngine',payload);}
     };
     if(confirmOverwrite) askConfirm('重新识别截图','切换识别方式会重新识别当前截图，并替换当前的可搜索文本。是否继续？',apply,false,'切换并识别');
@@ -572,8 +563,11 @@
     $('librarySub').textContent=state.topView==='trash'?`${items.length} 张已删除截图`:state.topView==='pending'?`${items.length} 张等待整理`:state.selectedPersonId?`${items.length} 张截图`:'';
     $('sortLabel').textContent=(sortChoices().find(choice=>choice.value===(state.settings?.screenshotSort||'newest'))??sortChoices()[0]).label;
     $('centerSearch').placeholder=state.topView==='trash'?'搜索回收站中的文本或标签':state.topView==='pending'?'搜索待处理截图':'搜索当前图库中的文本或标签';
-    $('gridView').classList.toggle('active',viewMode==='grid');
-    $('listView').classList.toggle('active',viewMode==='list');
+    const viewToggle=$('viewToggle');
+    const switchToList=viewMode==='grid';
+    viewToggle.innerHTML=switchToList?listSvg:gridSvg;
+    viewToggle.title=switchToList?'切换到列表视图':'切换到卡片视图';
+    viewToggle.setAttribute('aria-label',viewToggle.title);
     const host=$('cards'); host.classList.toggle('list',viewMode==='list'); host.classList.toggle('selection-mode',selectionMode);
     if(!state.selectedPersonId && state.topView!=='pending' && state.topView!=='trash') {
       host.innerHTML=`<div class="empty-state" style="grid-column:1/-1"><div><h2>选择一个成员图库</h2><p>从左侧选择成员，或新建群组与成员。</p><button class="btn primary" id="emptyCreate">新建成员图库</button></div></div>`;
@@ -711,7 +705,7 @@
     const themeChoices=[{value:'dark',label:'黑色'},{value:'light',label:'白色'}];
     hotkeyDraft=hotkeyFromSettings(s);
     const searchIcon='<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="5"/><path d="m12 12 3 3"/></svg>';
-    $('settingsPage').innerHTML=`<div class="settings-shell"><aside class="settings-nav"><div class="settings-search">${searchIcon}<input id="settingsSearch" placeholder="搜索设置" aria-label="搜索设置"/><button id="settingsSearchClear" aria-label="清除搜索">×</button></div><nav class="settings-nav-list" aria-label="设置分类"><button class="active" data-settings-nav="settingsLayout">界面与布局</button><button data-settings-nav="settingsOcr">OCR</button><button data-settings-nav="settingsHotkey">快捷键</button><button data-settings-nav="settingsData">数据与备份</button></nav></aside><main class="settings-content" id="settingsContent"><section class="settings-card" id="settingsLayout" data-settings-search="界面 布局 主题 深色 浅色 黑色 白色 宽度 分隔线 恢复 默认"><h2>界面与布局</h2><p>选择界面主题，或拖动主界面分隔线调整各区域宽度。</p><div class="settings-control-row"><div><b>主题</b><span>切换黑色或白色界面</span></div>${customSelectMarkup('themeSelect',themeChoices,theme,'','选择界面主题')}</div><div class="smallrow"><button class="btn" id="resetLayout">恢复默认布局</button></div></section><section class="settings-card" id="settingsOcr" data-settings-search="ocr 识别 paddle 默认 引擎 模型 安装 删除"><h2>默认 OCR 引擎</h2><p>选择以后添加截图时默认使用的识别方式；添加和编辑页面可以为当前截图临时切换。</p><div class="ocr-row">${customSelectMarkup('ocrEngine',ocrEngineChoices(),selected,'','选择默认 OCR 方式')}${s.paddleAvailable?'<button class="btn danger-outline" id="removePaddleOcr">删除 PaddleOCR</button>':''}</div></section><section class="settings-card" id="settingsHotkey" data-settings-search="快捷键 全局 收录 剪贴板 待处理 键盘"><h2>全局收录快捷键</h2><p>按下快捷键后，将剪贴板图片静默加入待处理。</p><div class="hotkey-row"><button type="button" class="hotkey-recorder" id="hotKeyRecorder"><b>${esc(hotkeyLabel(hotkeyDraft))}</b></button><button class="btn primary" id="saveHotKey">保存快捷键</button></div><div class="hotkey-hint" id="hotKeyHint">点击快捷键框，然后直接按下新的组合键。</div></section><section class="settings-card" id="settingsData" data-settings-search="数据 备份 恢复 导出 zip 原图 索引"><h2>数据与备份</h2><p>备份包含索引、群组、成员图库、可搜索文本、标签和全部原图。</p><div class="smallrow"><button class="btn" id="backupData">导出完整备份</button><button class="btn" id="restoreData">从备份恢复</button></div></section><div class="settings-empty" id="settingsEmpty">没有匹配的设置</div></main></div>`;
+    $('settingsPage').innerHTML=`<div class="settings-shell"><aside class="settings-nav"><div class="settings-search">${searchIcon}<input id="settingsSearch" placeholder="搜索设置" aria-label="搜索设置"/><button id="settingsSearchClear" aria-label="清除搜索">×</button></div><nav class="settings-nav-list" aria-label="设置分类"><button class="active" data-settings-nav="settingsLayout">界面与布局</button><button data-settings-nav="settingsOcr">默认 OCR 引擎</button><button data-settings-nav="settingsHotkey">全局收录快捷键</button><button data-settings-nav="settingsData">数据与备份</button></nav></aside><main class="settings-content" id="settingsContent"><section class="settings-card" id="settingsLayout" data-settings-search="界面 布局 主题 深色 浅色 黑色 白色 宽度 分隔线 恢复 默认"><h2>界面与布局</h2><p>选择界面主题，或拖动主界面分隔线调整各区域宽度。</p><div class="settings-control-row"><div><b>主题</b><span>切换黑色或白色界面</span></div>${customSelectMarkup('themeSelect',themeChoices,theme,'','选择界面主题')}</div><div class="smallrow"><button class="btn" id="resetLayout">恢复默认布局</button></div></section><section class="settings-card" id="settingsOcr" data-settings-search="ocr 识别 paddle 默认 引擎 模型 安装 删除"><h2>默认 OCR 引擎</h2><p>选择以后添加截图时默认使用的识别方式；添加和编辑页面可以为当前截图临时切换。</p><div class="ocr-row">${customSelectMarkup('ocrEngine',ocrEngineChoices(),selected,'','选择默认 OCR 方式')}${s.paddleAvailable?'<button class="btn danger-outline" id="removePaddleOcr">删除 PaddleOCR</button>':''}</div></section><section class="settings-card" id="settingsHotkey" data-settings-search="快捷键 全局 收录 剪贴板 待处理 键盘"><h2>全局收录快捷键</h2><p>按下快捷键后，将剪贴板图片静默加入待处理。</p><div class="hotkey-row"><button type="button" class="hotkey-recorder" id="hotKeyRecorder"><b>${esc(hotkeyLabel(hotkeyDraft))}</b></button><button class="btn primary" id="saveHotKey">保存快捷键</button></div><div class="hotkey-hint" id="hotKeyHint">点击快捷键框，然后直接按下新的组合键。</div></section><section class="settings-card" id="settingsData" data-settings-search="数据 备份 恢复 导出 zip 原图 索引"><h2>数据与备份</h2><p>备份包含索引、群组、成员图库、可搜索文本、标签和全部原图。</p><div class="smallrow"><button class="btn" id="backupData">导出完整备份</button><button class="btn" id="restoreData">从备份恢复</button></div></section><div class="settings-empty" id="settingsEmpty">没有匹配的设置</div></main></div>`;
     bindCustomSelect('ocrEngine',ocrEngineChoices(),engine=>requestOcrChange(engine,'settings',null,false,()=>{nextImportOcrEngine=null;}),false);
     bindCustomSelect('themeSelect',themeChoices,value=>{applyTheme(value);post('saveThemeSettings',{theme:value});});
     bindSettingsNavigation();
@@ -762,12 +756,15 @@
     $('centerSearchClear').onclick=()=>{$('centerSearch').value='';updateSearchClear('center');renderCenter();$('centerSearch').focus();};
     $('managePeople').onclick=e=>openCreateMenu(e.currentTarget);
     document.querySelector('.sidebar').addEventListener('contextmenu',e=>{if(e.target.closest('[data-person],[data-group],button,input,.side-actions'))return;e.preventDefault();showMenu(e.clientX,e.clientY,[{label:'新建群组',action:()=>openGroupModal()},{label:'新建成员',action:()=>openMemberModal()}]);});
-    $('gridView').onclick=()=>{resetSelectionMode();viewMode='grid';saveViewPreferences();renderCenter();};
-    $('listView').onclick=()=>{resetSelectionMode();viewMode='list';saveViewPreferences();renderCenter();};
+    $('viewToggle').onclick=()=>{resetSelectionMode();viewMode=viewMode==='grid'?'list':'grid';saveViewPreferences();renderCenter();};
     $('minimizeWindow').onclick=e=>{e.stopPropagation();post('windowAction',{action:'minimize'});};$('maximizeWindow').onclick=e=>{e.stopPropagation();post('windowAction',{action:'maximize'});};$('closeWindow').onclick=e=>{e.stopPropagation();post('windowAction',{action:'close'});};
     $('titlebar').onmousedown=e=>{if(!e.target.closest('.window-actions'))post('windowAction',{action:'drag'});};
     $('titlebar').ondblclick=e=>{if(!e.target.closest('.window-actions'))post('windowAction',{action:'maximize'});};
     document.addEventListener('pointerdown',e=>{if(!e.target.closest('.context-menu,.card-more,#managePeople,.custom-select,.sort'))closeFloating();});
+    document.addEventListener('pointerover',e=>{const anchor=e.target.closest?.('[data-tooltip]');if(anchor&&!anchor.contains(e.relatedTarget))showTooltip(anchor,anchor.dataset.tooltip);});
+    document.addEventListener('pointerout',e=>{const anchor=e.target.closest?.('[data-tooltip]');if(anchor&&!anchor.contains(e.relatedTarget))document.querySelector('.app-tooltip')?.remove();});
+    document.addEventListener('focusin',e=>{const anchor=e.target.closest?.('[data-tooltip]');if(anchor)showTooltip(anchor,anchor.dataset.tooltip);});
+    document.addEventListener('focusout',e=>{if(e.target.closest?.('[data-tooltip]'))document.querySelector('.app-tooltip')?.remove();});
     document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeFloating();const layer=document.querySelector('.modal-layer');if(!layer?.classList.contains('locked'))layer?.remove();}});
     window.addEventListener('resize',()=>{if(!layoutDrag)applyLayoutSettings();});
   }
@@ -778,7 +775,7 @@
     setState(next){state={...state,...next};applyTheme(state.settings?.theme);viewMode=state.settings?.viewMode==='list'?'list':'grid';collapsedGroups=new Set(state.settings?.collapsedTreeNodes||[]);if(next.appVersion)$('appVersion').textContent=`${next.appVersion} · 本地聊天截图库`;renderApp();setActivePanel(state.activePanel||'preview',true);},
     setDraft(next){const stillAdding=state.topView==='library'&&state.activePanel==='add';if(draft&&Object.hasOwn(draft,'tags'))next.tags=draft.tags;draft=next;setBusy(false);if(stillAdding)setActivePanel('add',true);else{renderApp();toast('截图已读取，可在“添加”中继续处理。');}},
     clearDraft(){draft=null;renderAdd();},setBusy(value,text){Array.isArray(value)?setBusy(value[0],value[1]):setBusy(value,text);},
-    showError:toast,showNotice,setWindowState:setWindowIcon,updatePaddleInstallProgress,completePaddleInstall,failPaddleInstall,
+    showError:toast,showNotice,setWindowState:setWindowIcon,
     showDuplicate(info){modal(`<h2>发现重复图片</h2><p>图库中已经存在“${esc(info.originalFileName)}”。请选择如何处理。</p><div class="modal-actions"><button class="btn" data-skip>跳过</button><button class="btn" data-view>查看已有截图</button><button class="btn primary" data-import>仍然导入</button></div>`,layer=>{layer.querySelector('[data-skip]').onclick=()=>{layer.remove();post('resolveDuplicate',{action:'skip'});};layer.querySelector('[data-view]').onclick=()=>{layer.remove();post('resolveDuplicate',{action:'view'});};layer.querySelector('[data-import]').onclick=()=>{layer.remove();post('resolveDuplicate',{action:'import'});};});}
   };
   document.addEventListener('DOMContentLoaded',()=>{ensureDynamicUi();bindStaticEvents();post('ready');});

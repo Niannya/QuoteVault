@@ -265,11 +265,11 @@ public sealed class MainForm : Form
                 case "setOcrEngine":
                     await SetOcrEngineAsync(payload);
                     break;
-                case "installPaddleOcr":
-                    await InstallPaddleOcrAsync(payload);
-                    break;
                 case "uninstallPaddleOcr":
                     await UninstallPaddleOcrAsync();
+                    break;
+                case "openPaddleOcrGuide":
+                    Process.Start(new ProcessStartInfo("https://github.com/Niannya/QuoteVault#ocr") { UseShellExecute = true });
                     break;
                 case "createBackup":
                     await CreateBackupAsync();
@@ -954,74 +954,6 @@ public sealed class MainForm : Form
             return;
         }
         await SendStateAsync();
-    }
-
-    private async Task InstallPaddleOcrAsync(JsonElement payload)
-    {
-        try
-        {
-            var scriptPath = Path.Combine(AppContext.BaseDirectory, "paddleocr", "setup-runtime.ps1");
-            if (!File.Exists(scriptPath)) throw new FileNotFoundException("找不到 PaddleOCR 安装脚本。", scriptPath);
-
-            var startInfo = new ProcessStartInfo("powershell.exe")
-            {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                StandardOutputEncoding = System.Text.Encoding.UTF8,
-                StandardErrorEncoding = System.Text.Encoding.UTF8
-            };
-            startInfo.ArgumentList.Add("-NoProfile");
-            startInfo.ArgumentList.Add("-ExecutionPolicy");
-            startInfo.ArgumentList.Add("Bypass");
-            startInfo.ArgumentList.Add("-File");
-            startInfo.ArgumentList.Add(scriptPath);
-            startInfo.ArgumentList.Add("-DownloadModels");
-
-            using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 PaddleOCR 安装程序。");
-            var output = new System.Text.StringBuilder();
-            var error = new System.Text.StringBuilder();
-            process.ErrorDataReceived += (_, args) =>
-            {
-                if (!string.IsNullOrWhiteSpace(args.Data)) lock (error) error.AppendLine(args.Data);
-            };
-            process.BeginErrorReadLine();
-            while (await process.StandardOutput.ReadLineAsync() is { } line)
-            {
-                output.AppendLine(line);
-                if (TryReadPaddleProgress(line, out var progress, out var text))
-                    await InvokeWebAsync("updatePaddleInstallProgress", new { progress, text });
-            }
-            await process.WaitForExitAsync();
-            if (process.ExitCode != 0)
-                throw new InvalidOperationException("PaddleOCR 安装失败。\n" +
-                                                    (error.Length == 0 ? output : error).ToString().Trim());
-            if (!_paddleOcr.IsFullyInstalled)
-                throw new InvalidOperationException("安装程序已结束，但 PaddleOCR 运行环境或模型不完整。");
-
-            var target = payload.TryGetProperty("target", out var targetValue) ? targetValue.GetString() : "settings";
-            if (target == "settings") SaveOcrEngine("PaddleOcrV6");
-            await CompleteOcrEngineChangeAsync(payload, "PaddleOcrV6");
-            await InvokeWebAsync("completePaddleInstall");
-        }
-        catch (Exception ex)
-        {
-            await InvokeWebAsync("failPaddleInstall", new { message = ex.Message });
-        }
-    }
-
-    private static bool TryReadPaddleProgress(string line, out int progress, out string text)
-    {
-        const string prefix = "QUOTEVault_PROGRESS:";
-        progress = 0;
-        text = string.Empty;
-        if (!line.StartsWith(prefix, StringComparison.Ordinal)) return false;
-        var parts = line[prefix.Length..].Split(':', 2);
-        if (parts.Length != 2 || !int.TryParse(parts[0], out progress)) return false;
-        progress = Math.Clamp(progress, 0, 100);
-        text = parts[1];
-        return true;
     }
 
     private async Task UninstallPaddleOcrAsync()
