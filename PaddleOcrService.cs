@@ -31,7 +31,7 @@ public sealed class PaddleOcrService : IDisposable
     public async Task<OcrOutput> RecognizeAsync(string imagePath, CancellationToken cancellationToken = default)
     {
         if (!IsAvailable)
-            throw new InvalidOperationException("PaddleOCR 运行环境尚未安装。请先在 QuoteVault 设置中安装。");
+            throw new InvalidOperationException("PaddleOCR 运行环境尚未安装。请先按 QuoteVault GitHub 页面中的安装指南完成安装。");
         if (!File.Exists(imagePath)) throw new FileNotFoundException("找不到待识别图片。", imagePath);
 
         await _gate.WaitAsync(cancellationToken);
@@ -61,7 +61,6 @@ public sealed class PaddleOcrService : IDisposable
                     output.GetProperty("rawText").GetString() ?? string.Empty,
                     output.GetProperty("confidence").GetSingle(),
                     messages,
-                    [],
                     output.GetProperty("engine").GetString() ?? "PaddleOCR v6 medium");
             }
         }

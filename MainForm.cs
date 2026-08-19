@@ -38,6 +38,7 @@ public sealed class MainForm : Form
     private bool _hotKeyRegistered;
     private bool _webReady;
     private string? _hotKeyRegistrationWarning;
+    private FormWindowState _lastNonMinimizedWindowState = FormWindowState.Normal;
 
     public MainForm() : this(new AppStore()) { }
 
@@ -47,13 +48,14 @@ public sealed class MainForm : Form
         Text = "QuoteVault";
         FormBorderStyle = FormBorderStyle.None;
         BackColor = Color.FromArgb(17, 18, 16);
-        Size = new Size(1440, 900);
+        Size = new Size(AppSettings.DefaultWindowWidth, AppSettings.DefaultWindowHeight);
         MinimumSize = new Size(1120, 720);
         StartPosition = FormStartPosition.CenterScreen;
         KeyPreview = true;
         RestoreWindowPlacement();
 
         _webView.Dock = DockStyle.Fill;
+        _webView.AllowExternalDrop = true;
         _webView.DefaultBackgroundColor = Color.FromArgb(17, 18, 16);
         _webView.CreationProperties = new CoreWebView2CreationProperties
         {
@@ -70,6 +72,8 @@ public sealed class MainForm : Form
         FormClosing += (_, _) => SaveWindowPlacement();
         SizeChanged += async (_, _) =>
         {
+            if (WindowState != FormWindowState.Minimized)
+                _lastNonMinimizedWindowState = WindowState;
             ApplyRoundedWindowChrome();
             if (_webReady) await InvokeWebAsync("setWindowState", WindowState == FormWindowState.Maximized ? "maximized" : "normal");
         };
@@ -102,10 +106,16 @@ public sealed class MainForm : Form
             var intersection = Rectangle.Intersect(screen.WorkingArea, saved);
             return intersection.Width >= 120 && intersection.Height >= 80;
         });
-        if (!visible) return;
-        StartPosition = FormStartPosition.Manual;
-        Bounds = saved;
-        if (settings.WindowMaximized) WindowState = FormWindowState.Maximized;
+        if (visible)
+        {
+            StartPosition = FormStartPosition.Manual;
+            Bounds = saved;
+        }
+        if (settings.WindowMaximized)
+        {
+            _lastNonMinimizedWindowState = FormWindowState.Maximized;
+            WindowState = FormWindowState.Maximized;
+        }
     }
 
     private void SaveWindowPlacement()
@@ -118,7 +128,9 @@ public sealed class MainForm : Form
         settings.WindowY = bounds.Y;
         settings.WindowWidth = bounds.Width;
         settings.WindowHeight = bounds.Height;
-        settings.WindowMaximized = WindowState == FormWindowState.Maximized;
+        settings.WindowMaximized = WindowState == FormWindowState.Maximized ||
+                                   WindowState == FormWindowState.Minimized &&
+                                   _lastNonMinimizedWindowState == FormWindowState.Maximized;
         _store.Save();
     }
 
@@ -187,9 +199,15 @@ public sealed class MainForm : Form
                     _topView = "library";
                     await SendStateAsync("preview");
                     break;
+                case "editMember":
+                    _selectedPersonId = ReadGuid(payload, "id");
+                    _selectedScreenshotId = null;
+                    _topView = "library";
+                    await SendStateAsync("edit");
+                    break;
                 case "selectScreenshot":
                     _selectedScreenshotId = ReadGuid(payload, "id");
-                    await SendStateAsync("preview");
+                    _activePanel = "preview";
                     break;
                 case "selectGlobalScreenshot":
                     SelectGlobalScreenshot(ReadGuid(payload, "id"));
@@ -197,14 +215,6 @@ public sealed class MainForm : Form
                     break;
                 case "clearScreenshotSelection":
                     _selectedScreenshotId = null;
-                    await SendStateAsync("preview");
-                    break;
-                case "managePeople":
-                    await SendStateAsync();
-                    break;
-                case "openSettings":
-                    _topView = "settings";
-                    await SendStateAsync("preview");
                     break;
                 case "createGroup":
                     CreateGroup(payload);
@@ -226,16 +236,40 @@ public sealed class MainForm : Form
                     UpdateMember(payload);
                     await SendStateAsync();
                     break;
+                case "chooseMemberAvatar":
+                    await ChooseMemberAvatarAsync();
+                    break;
                 case "deleteMember":
                     DeleteMember(ReadGuid(payload, "id"));
+                    await SendStateAsync();
+                    break;
+                case "deleteMembers":
+                    DeleteMembers(payload);
                     await SendStateAsync();
                     break;
                 case "moveMember":
                     MoveMember(payload);
                     await SendStateAsync();
                     break;
-                case "moveScreenshots":
-                    MoveScreenshots(payload);
+                case "moveMembers":
+                    MoveMembers(payload);
+                    await SendStateAsync();
+                    break;
+                case "reorderMembers":
+                    ReorderMembers(payload);
+                    await SendStateAsync();
+                    break;
+                case "addScreenshotsToLibrary": // 兼容 0.7.x 前端消息
+                case "copyScreenshotsToLibrary":
+                    CopyScreenshotsToLibrary(payload);
+                    await SendStateAsync("preview");
+                    break;
+                case "moveScreenshotsToLibrary":
+                    MoveScreenshotsToLibrary(payload);
+                    await SendStateAsync("preview");
+                    break;
+                case "removeScreenshotsFromLibrary":
+                    RemoveScreenshotsFromLibrary(payload);
                     await SendStateAsync("preview");
                     break;
                 case "saveHotKeySettings":
@@ -245,11 +279,9 @@ public sealed class MainForm : Form
                     break;
                 case "saveLayoutSettings":
                     SaveLayoutSettings(payload);
-                    await SendStateAsync();
                     break;
                 case "resetLayoutSettings":
                     ResetLayoutSettings();
-                    await SendStateAsync();
                     break;
                 case "saveThemeSettings":
                     SaveThemeSettings(payload);
@@ -259,6 +291,15 @@ public sealed class MainForm : Form
                     SaveScreenshotSort(payload);
                     await SendStateAsync();
                     break;
+                case "saveFavoritesFirst":
+                    SaveFavoritesFirst(payload);
+                    break;
+                case "toggleFavorite":
+                    {
+                        var result = ToggleFavorite(payload);
+                        await InvokeWebAsync("favoriteChanged", result);
+                        break;
+                    }
                 case "saveViewPreferences":
                     SaveViewPreferences(payload);
                     break;
@@ -297,14 +338,41 @@ public sealed class MainForm : Form
                     _draft = null;
                     break;
                 case "commitDraft":
-                    await CommitDraftAsync(payload.GetProperty("pending").GetBoolean(), ReadGuid(payload, "libraryId"),
+                    await CommitDraftAsync(payload.GetProperty("pending").GetBoolean(), ReadValidLibraryIds(payload),
                         ReadStringList(payload, "tags"), ReadText(payload, "searchText"));
                     break;
                 case "resolveDuplicate":
                     await ResolveDuplicateAsync(payload.GetProperty("action").GetString());
                     break;
+                case "beginExternalScreenshotDrag":
+                    {
+                        var dragIds = ReadStringList(payload, "ids")
+                            .Select(x => Guid.TryParse(x, out var id) ? id : Guid.Empty)
+                            .Where(x => x != Guid.Empty)
+                            .Distinct()
+                            .ToArray();
+                        if (dragIds.Length > 0)
+                            BeginInvoke(async () =>
+                            {
+                                try
+                                {
+                                    BeginExternalScreenshotDrag(dragIds);
+                                    await InvokeWebAsync("externalDragEnded");
+                                }
+                                catch (Exception ex)
+                                {
+                                    await ShowWebErrorAsync($"拖出截图失败：{ex.Message}");
+                                }
+                            });
+                        break;
+                    }
                 case "copyImage":
                     CopyImage(ReadGuid(payload, "id"));
+                    await InvokeWebAsync("showError", "已复制到剪贴板。");
+                    break;
+                case "copyDataUrlImage":
+                    CopyDataUrlImage(payload.TryGetProperty("dataUrl", out var copyDataUrl) ? copyDataUrl.GetString() : null);
+                    await InvokeWebAsync("showError", "已复制到剪贴板。");
                     break;
                 case "showFile":
                     ShowFile(ReadGuid(payload, "id"));
@@ -324,9 +392,6 @@ public sealed class MainForm : Form
                 case "saveEdit":
                     SaveEdit(payload);
                     await SendStateAsync("preview");
-                    break;
-                case "rerunOcr":
-                    await RerunOcrAsync(ReadGuid(payload, "id"), ReadOptionalOcrEngine(payload));
                     break;
                 case "windowAction":
                     HandleWindowAction(payload.GetProperty("action").GetString());
@@ -351,6 +416,9 @@ public sealed class MainForm : Form
             {
                 id = x.Id,
                 displayName = x.DisplayName,
+                qqNumber = x.QqNumber,
+                note = x.Note,
+                avatarDataUrl = x.AvatarDataUrl,
                 categoryIds = x.CategoryIds
             }),
             categories = _store.State.Categories.Select(x => new
@@ -369,13 +437,16 @@ public sealed class MainForm : Form
                 confidence = x.OcrConfidence,
                 ocrEngine = x.OcrEngine,
                 ocrEngineKey = x.OcrEngineKey,
-                libraryId = x.LibraryId,
+                libraryIds = x.LibraryIds,
                 searchText = x.SearchText,
                 tags = x.Tags,
+                isFavorite = x.IsFavorite,
                 imageUrl = $"https://images.quotevault.local/{Uri.EscapeDataString(x.StoredFileName)}",
                 thumbnailUrl = File.Exists(_store.GetThumbnailFile(x))
-                    ? $"https://thumbs.quotevault.local/{Uri.EscapeDataString(Path.GetFileNameWithoutExtension(x.StoredFileName) + ".jpg")}"
-                    : $"https://images.quotevault.local/{Uri.EscapeDataString(x.StoredFileName)}"
+                    ? $"https://thumbs.quotevault.local/{Uri.EscapeDataString(Path.GetFileName(_store.GetThumbnailFile(x)))}"
+                    : File.Exists(_store.GetLegacyThumbnailFile(x))
+                        ? $"https://thumbs.quotevault.local/{Uri.EscapeDataString(Path.GetFileName(_store.GetLegacyThumbnailFile(x)))}"
+                        : $"https://images.quotevault.local/{Uri.EscapeDataString(x.StoredFileName)}"
             }),
             selectedPersonId = _selectedPersonId,
             selectedScreenshotId = _selectedScreenshotId,
@@ -393,7 +464,9 @@ public sealed class MainForm : Form
                 sidebarWidth = _store.State.Settings.SidebarWidth,
                 workbenchWidth = _store.State.Settings.WorkbenchWidth,
                 screenshotSort = _store.State.Settings.ScreenshotSort,
-                viewMode = _store.State.Settings.ViewMode,
+                favoritesFirst = _store.State.Settings.FavoritesFirst,
+                gridDensity = _store.State.Settings.GridDensity,
+                sidebarHidden = _store.State.Settings.SidebarHidden,
                 collapsedTreeNodes = _store.State.Settings.CollapsedTreeNodes
             },
             appVersion = Application.ProductVersion
@@ -430,8 +503,8 @@ public sealed class MainForm : Form
         return (engineOverride ?? _store.State.Settings.OcrEngine) switch
         {
             "PaddleOcrV6" when _paddleOcr.IsFullyInstalled => _paddleOcr.RecognizeAsync(imagePath, cancellationToken),
-            "PaddleOcrV6" => throw new InvalidOperationException("PaddleOCR 尚未安装，请先在设置中完成安装。"),
-            _ => Task.FromResult(new OcrOutput(string.Empty, 0, [string.Empty], [], "未使用 OCR"))
+            "PaddleOcrV6" => throw new InvalidOperationException("PaddleOCR 尚未安装。请先打开 GitHub 安装指南完成安装。"),
+            _ => Task.FromResult(new OcrOutput(string.Empty, 0, [string.Empty], "未使用 OCR"))
         };
     }
 
@@ -517,8 +590,7 @@ public sealed class MainForm : Form
             item.NeedsReview = true;
             if (libraryId.HasValue && _store.State.People.Any(x => x.Id == libraryId.Value))
             {
-                item.LibraryId = libraryId;
-                item.PersonIds = [libraryId.Value];
+                item.LibraryIds = [libraryId.Value];
             }
             try
             {
@@ -576,7 +648,7 @@ public sealed class MainForm : Form
         }
     }
 
-    private async Task CommitDraftAsync(bool pending, Guid? libraryId, IReadOnlyList<string> tags,
+    private async Task CommitDraftAsync(bool pending, IReadOnlyList<Guid> libraryIds, IReadOnlyList<string> tags,
         string searchText, bool bypassDuplicateCheck = false)
     {
         if (_draft is null) return;
@@ -584,7 +656,7 @@ public sealed class MainForm : Form
         var duplicate = _store.FindDuplicate(hash);
         if (duplicate is not null && !bypassDuplicateCheck)
         {
-            _pendingDuplicateCommit = new PendingDuplicateCommit(pending, libraryId, tags.ToList(), searchText,
+            _pendingDuplicateCommit = new PendingDuplicateCommit(pending, libraryIds.ToList(), tags.ToList(), searchText,
                 duplicate.Id);
             await InvokeWebAsync("showDuplicate", new { duplicate.OriginalFileName });
             return;
@@ -598,15 +670,14 @@ public sealed class MainForm : Form
         item.SearchText = NormalizeSearchText(searchText);
         item.NeedsReview = pending;
         item.Tags = NormalizeTags(tags);
-        if (libraryId is Guid id && _store.State.People.Any(x => x.Id == id))
-        {
-            item.LibraryId = id;
-            item.PersonIds = [id];
-        }
+        item.LibraryIds = libraryIds
+            .Where(id => _store.State.People.Any(x => x.Id == id))
+            .Distinct()
+            .ToList();
         _store.Save();
 
         _selectedScreenshotId = item.Id;
-        _selectedPersonId = item.NeedsReview ? null : item.LibraryId ?? _selectedPersonId;
+        _selectedPersonId = item.NeedsReview || item.LibraryIds.Count == 0 ? null : item.LibraryIds[0];
         _topView = item.NeedsReview ? "pending" : "library";
         _draft = null;
         await InvokeWebAsync("clearDraft");
@@ -620,7 +691,7 @@ public sealed class MainForm : Form
         if (pending is null) return;
         if (action == "import")
         {
-            await CommitDraftAsync(pending.Pending, pending.LibraryId, pending.Tags, pending.SearchText, true);
+            await CommitDraftAsync(pending.Pending, pending.LibraryIds, pending.Tags, pending.SearchText, true);
             return;
         }
         if (action == "view")
@@ -651,16 +722,14 @@ public sealed class MainForm : Form
         var item = _store.State.Screenshots.FirstOrDefault(x => x.Id == id) ?? throw new FileNotFoundException("截图不存在。");
         item.SearchText = NormalizeSearchText(ReadText(payload, "searchText"));
         item.Tags = NormalizeTags(ReadStringList(payload, "tags"));
-        var libraryId = ReadGuid(payload, "libraryId") ?? item.LibraryId ?? _selectedPersonId;
-        if (_topView == "pending" && (!libraryId.HasValue || !_store.State.People.Any(x => x.Id == libraryId.Value)))
-            throw new InvalidOperationException("请选择要存放截图的图库。");
-        if (libraryId.HasValue && _store.State.People.Any(x => x.Id == libraryId.Value))
-        {
-            item.LibraryId = libraryId;
-            item.PersonIds = [libraryId.Value];
-            _selectedPersonId = libraryId;
-        }
+        var libraryIds = ReadValidLibraryIds(payload);
+        if (libraryIds.Count == 0)
+            throw new InvalidOperationException("请至少选择一个存放图库。");
+        item.LibraryIds = libraryIds;
         item.NeedsReview = false;
+        _selectedPersonId = _selectedPersonId.HasValue && libraryIds.Contains(_selectedPersonId.Value)
+            ? _selectedPersonId
+            : libraryIds[0];
         if (_topView == "pending") _topView = "library";
         _store.Save();
     }
@@ -681,12 +750,39 @@ public sealed class MainForm : Form
         await SetWebBusyAsync(false, string.Empty);
     }
 
+    private void BeginExternalScreenshotDrag(IReadOnlyCollection<Guid> ids)
+    {
+        var selectedIds = ids.ToHashSet();
+        var files = _store.State.Screenshots
+            .Where(x => selectedIds.Contains(x.Id) && !x.DeletedAt.HasValue)
+            .Select(_store.GetImageFile)
+            .Where(File.Exists)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (files.Length == 0) return;
+
+        var data = new DataObject();
+        // 只放真实文件，不再塞 JSON 文本。QQ/资源管理器会把它当图片文件；
+        // 拖回 QuoteVault 内部时，WebView 通过前端保存的拖动上下文决定移动或 Ctrl+复制。
+        data.SetData(DataFormats.FileDrop, files);
+        DoDragDrop(data, DragDropEffects.Copy | DragDropEffects.Move);
+    }
+
     private void CopyImage(Guid? id)
     {
         var item = _store.State.Screenshots.FirstOrDefault(x => x.Id == id) ?? throw new FileNotFoundException("截图不存在。");
-        if (item.DeletedAt.HasValue || item.NeedsReview)
-            throw new InvalidOperationException("只有已整理图库中的截图可以复制到剪贴板。");
         using var stream = new MemoryStream(File.ReadAllBytes(_store.GetImageFile(item)));
+        using var image = Image.FromStream(stream);
+        Clipboard.SetImage(new Bitmap(image));
+    }
+
+    private static void CopyDataUrlImage(string? dataUrl)
+    {
+        if (string.IsNullOrWhiteSpace(dataUrl)) throw new InvalidDataException("图片数据为空。");
+        var comma = dataUrl.IndexOf(',');
+        if (comma < 0) throw new InvalidDataException("无法读取图片数据。");
+        var bytes = Convert.FromBase64String(dataUrl[(comma + 1)..]);
+        using var stream = new MemoryStream(bytes);
         using var image = Image.FromStream(stream);
         Clipboard.SetImage(new Bitmap(image));
     }
@@ -708,10 +804,7 @@ public sealed class MainForm : Form
     {
         var item = _store.State.Screenshots.FirstOrDefault(x => x.Id == id) ?? throw new FileNotFoundException("截图不存在。");
         _store.RestoreFromTrash(item, false);
-        if (!item.LibraryId.HasValue)
-        {
-            item.NeedsReview = true;
-        }
+        if (item.LibraryIds.Count == 0) item.NeedsReview = true;
         _store.Save();
         _selectedScreenshotId = null;
     }
@@ -761,7 +854,7 @@ public sealed class MainForm : Form
     private void CreateMember(JsonElement payload)
     {
         var name = payload.GetProperty("name").GetString()?.Trim();
-        if (string.IsNullOrWhiteSpace(name)) throw new InvalidDataException("成员名称不能为空。");
+        if (string.IsNullOrWhiteSpace(name)) throw new InvalidDataException("ID 不能为空。");
         var member = new PersonItem { DisplayName = name, CategoryIds = ReadValidGroupIds(payload) };
         _store.State.People.Add(member);
         _selectedPersonId = member.Id;
@@ -773,27 +866,86 @@ public sealed class MainForm : Form
     {
         var id = ReadGuid(payload, "id") ?? throw new InvalidDataException("没有选择成员。");
         var member = _store.State.People.FirstOrDefault(x => x.Id == id) ?? throw new InvalidDataException("成员不存在。");
-        var name = payload.GetProperty("name").GetString()?.Trim();
-        if (string.IsNullOrWhiteSpace(name)) throw new InvalidDataException("成员名称不能为空。");
-        member.DisplayName = name;
+        var name = ReadText(payload, "name").Trim();
+        if (string.IsNullOrWhiteSpace(name)) throw new InvalidDataException("ID 不能为空。");
+        member.DisplayName = LimitMemberText(name, 80);
+        member.QqNumber = LimitMemberText(ReadText(payload, "qqNumber").Trim(), 40);
+        member.Note = LimitMemberText(ReadText(payload, "note").Trim(), 1000);
         member.CategoryIds = ReadValidGroupIds(payload);
+        var avatarDataUrl = ReadText(payload, "avatarDataUrl").Trim();
+        if (avatarDataUrl.Length > 600_000) throw new InvalidDataException("头像数据过大，请选择其他图片。");
+        if (avatarDataUrl.Length > 0 && !avatarDataUrl.StartsWith("data:image/png;base64,", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("头像格式无效。");
+        member.AvatarDataUrl = avatarDataUrl;
         _store.Save();
+    }
+
+    private async Task ChooseMemberAvatarAsync()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Filter = "图片文件|*.png;*.jpg;*.jpeg;*.bmp;*.gif|所有文件|*.*",
+            Multiselect = false,
+            RestoreDirectory = true,
+            Title = "选择成员头像"
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        var dataUrl = await Task.Run(() => CreateMemberAvatarDataUrl(dialog.FileName));
+        await InvokeWebAsync("setMemberAvatar", new { dataUrl });
+    }
+
+    private static string CreateMemberAvatarDataUrl(string path)
+    {
+        using var source = Image.FromFile(path);
+        const int size = 256;
+        using var target = new Bitmap(size, size, PixelFormat.Format32bppArgb);
+        using (var graphics = Graphics.FromImage(target))
+        {
+            graphics.Clear(Color.Transparent);
+            graphics.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.HighQuality;
+            graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            var scale = Math.Max((double)size / source.Width, (double)size / source.Height);
+            var width = source.Width * scale;
+            var height = source.Height * scale;
+            graphics.DrawImage(source, (float)((size - width) / 2), (float)((size - height) / 2), (float)width, (float)height);
+        }
+        using var stream = new MemoryStream();
+        target.Save(stream, ImageFormat.Png);
+        return "data:image/png;base64," + Convert.ToBase64String(stream.ToArray());
     }
 
     private void DeleteMember(Guid? id)
     {
-        var member = _store.State.People.FirstOrDefault(x => x.Id == id);
-        if (member is null) return;
+        if (!id.HasValue) return;
+        DeleteMembersById([id.Value]);
+    }
+
+    private void DeleteMembers(JsonElement payload)
+    {
+        var ids = ReadStringList(payload, "ids")
+            .Select(x => Guid.TryParse(x, out var id) ? id : Guid.Empty)
+            .Where(x => x != Guid.Empty)
+            .Distinct()
+            .ToHashSet();
+        DeleteMembersById(ids);
+    }
+
+    private void DeleteMembersById(IEnumerable<Guid> ids)
+    {
+        var selected = ids.ToHashSet();
+        if (selected.Count == 0) return;
         foreach (var screenshot in _store.State.Screenshots)
         {
-            if (screenshot.LibraryId != member.Id) continue;
-            screenshot.LibraryId = null;
-            screenshot.PersonIds.Clear();
-            screenshot.NeedsReview = true;
+            screenshot.LibraryIds.RemoveAll(selected.Contains);
+            if (screenshot.LibraryIds.Count == 0) screenshot.NeedsReview = true;
         }
-        _store.State.NicknameMappings.RemoveAll(x => x.PersonId == member.Id);
-        _store.State.People.Remove(member);
-        if (_selectedPersonId == member.Id) _selectedPersonId = null;
+        _store.State.People.RemoveAll(member => selected.Contains(member.Id));
+        if (_selectedPersonId.HasValue && selected.Contains(_selectedPersonId.Value))
+        {
+            _selectedPersonId = null;
+            _selectedScreenshotId = null;
+        }
         _store.Save();
     }
 
@@ -810,7 +962,71 @@ public sealed class MainForm : Form
         _store.Save();
     }
 
-    private void MoveScreenshots(JsonElement payload)
+    private void MoveMembers(JsonElement payload)
+    {
+        var targetGroupId = ReadGuid(payload, "targetGroupId") ?? throw new InvalidDataException("没有选择目标群组。");
+        if (!_store.State.Categories.Any(x => x.Id == targetGroupId))
+            throw new InvalidDataException("目标群组不存在。");
+        if (!payload.TryGetProperty("members", out var members) || members.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException("没有选择成员。");
+
+        foreach (var entry in members.EnumerateArray())
+        {
+            var memberId = ReadGuid(entry, "memberId");
+            if (!memberId.HasValue) continue;
+            var member = _store.State.People.FirstOrDefault(x => x.Id == memberId.Value);
+            if (member is null) continue;
+            var sourceGroupId = ReadGuid(entry, "sourceGroupId");
+            if (sourceGroupId.HasValue && sourceGroupId != targetGroupId) member.CategoryIds.Remove(sourceGroupId.Value);
+            if (!member.CategoryIds.Contains(targetGroupId)) member.CategoryIds.Add(targetGroupId);
+        }
+        _store.Save();
+    }
+
+    private void ReorderMembers(JsonElement payload)
+    {
+        var targetMemberId = ReadGuid(payload, "targetMemberId") ?? throw new InvalidDataException("没有选择排序目标。");
+        var targetMember = _store.State.People.FirstOrDefault(x => x.Id == targetMemberId) ??
+                           throw new InvalidDataException("排序目标不存在。");
+        var targetGroupId = ReadGuid(payload, "targetGroupId");
+        if (targetGroupId.HasValue && !_store.State.Categories.Any(x => x.Id == targetGroupId.Value))
+            throw new InvalidDataException("目标群组不存在。");
+        if (!payload.TryGetProperty("members", out var members) || members.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException("没有选择成员。");
+
+        var sourceGroups = new Dictionary<Guid, Guid?>();
+        foreach (var entry in members.EnumerateArray())
+        {
+            var memberId = ReadGuid(entry, "memberId");
+            if (!memberId.HasValue || memberId.Value == targetMemberId) continue;
+            sourceGroups[memberId.Value] = ReadGuid(entry, "sourceGroupId");
+        }
+        if (sourceGroups.Count == 0) return;
+
+        var moving = _store.State.People.Where(x => sourceGroups.ContainsKey(x.Id)).ToList();
+        if (moving.Count == 0) return;
+
+        // 拖到另一个成员上时，同时允许把成员移入目标成员所在的群组。
+        foreach (var member in moving)
+        {
+            var sourceGroupId = sourceGroups[member.Id];
+            if (sourceGroupId.HasValue && sourceGroupId != targetGroupId)
+                member.CategoryIds.Remove(sourceGroupId.Value);
+            if (targetGroupId.HasValue && !member.CategoryIds.Contains(targetGroupId.Value))
+                member.CategoryIds.Add(targetGroupId.Value);
+        }
+
+        // People 在 JSON 中的顺序就是用户手动排序。各群组筛选时保持这个顺序。
+        foreach (var member in moving) _store.State.People.Remove(member);
+        var targetIndex = _store.State.People.IndexOf(targetMember);
+        if (targetIndex < 0) return;
+        var position = payload.TryGetProperty("position", out var positionValue) ? positionValue.GetString() : "after";
+        if (!string.Equals(position, "before", StringComparison.OrdinalIgnoreCase)) targetIndex++;
+        _store.State.People.InsertRange(targetIndex, moving);
+        _store.Save();
+    }
+
+    private void CopyScreenshotsToLibrary(JsonElement payload)
     {
         var targetMemberId = ReadGuid(payload, "targetMemberId") ?? throw new InvalidDataException("没有选择目标图库。");
         if (!_store.State.People.Any(x => x.Id == targetMemberId)) throw new InvalidDataException("目标成员不存在。");
@@ -818,13 +1034,58 @@ public sealed class MainForm : Form
             .Where(x => x != Guid.Empty).ToHashSet();
         foreach (var item in _store.State.Screenshots.Where(x => ids.Contains(x.Id) && !x.DeletedAt.HasValue))
         {
-            item.LibraryId = targetMemberId;
-            item.PersonIds = [targetMemberId];
-            item.NeedsReview = false;
+            if (!item.LibraryIds.Contains(targetMemberId)) item.LibraryIds.Add(targetMemberId);
         }
-        _selectedPersonId = targetMemberId;
         _selectedScreenshotId = ids.Count == 1 ? ids.First() : null;
-        _topView = "library";
+        _store.Save();
+    }
+
+    private void MoveScreenshotsToLibrary(JsonElement payload)
+    {
+        var targetMemberId = ReadGuid(payload, "targetMemberId") ?? throw new InvalidDataException("没有选择目标图库。");
+        if (!_store.State.People.Any(x => x.Id == targetMemberId)) throw new InvalidDataException("目标成员不存在。");
+        var sourceMemberId = ReadGuid(payload, "sourceLibraryId");
+        var sourceView = payload.TryGetProperty("sourceView", out var sourceViewValue)
+            ? sourceViewValue.GetString() ?? string.Empty
+            : string.Empty;
+        var ids = ReadStringList(payload, "ids").Select(x => Guid.TryParse(x, out var id) ? id : Guid.Empty)
+            .Where(x => x != Guid.Empty).ToHashSet();
+
+        foreach (var item in _store.State.Screenshots.Where(x => ids.Contains(x.Id) && !x.DeletedAt.HasValue))
+        {
+            if (!item.LibraryIds.Contains(targetMemberId)) item.LibraryIds.Add(targetMemberId);
+            if (string.Equals(sourceView, "library", StringComparison.OrdinalIgnoreCase) &&
+                sourceMemberId.HasValue && sourceMemberId.Value != targetMemberId)
+                item.LibraryIds.Remove(sourceMemberId.Value);
+            if (string.Equals(sourceView, "pending", StringComparison.OrdinalIgnoreCase))
+                item.NeedsReview = false;
+        }
+
+        // 从待处理“移动到图库”后继续停留在待处理，方便连续整理下一张。
+        if (string.Equals(sourceView, "pending", StringComparison.OrdinalIgnoreCase))
+        {
+            _topView = "pending";
+            _selectedPersonId = null;
+            _selectedScreenshotId = null;
+        }
+        else
+        {
+            _selectedScreenshotId = ids.Count == 1 ? ids.First() : null;
+        }
+        _store.Save();
+    }
+
+    private void RemoveScreenshotsFromLibrary(JsonElement payload)
+    {
+        var libraryId = ReadGuid(payload, "libraryId") ?? throw new InvalidDataException("没有选择图库。");
+        var ids = ReadStringList(payload, "ids").Select(x => Guid.TryParse(x, out var id) ? id : Guid.Empty)
+            .Where(x => x != Guid.Empty).ToHashSet();
+        foreach (var item in _store.State.Screenshots.Where(x => ids.Contains(x.Id) && !x.DeletedAt.HasValue))
+        {
+            item.LibraryIds.Remove(libraryId);
+            if (item.LibraryIds.Count == 0) item.NeedsReview = true;
+        }
+        _selectedScreenshotId = null;
         _store.Save();
     }
 
@@ -833,9 +1094,16 @@ public sealed class MainForm : Form
         var item = _store.State.Screenshots.FirstOrDefault(x => x.Id == id && !x.DeletedAt.HasValue) ??
                    throw new FileNotFoundException("截图不存在。");
         _selectedScreenshotId = item.Id;
-        _selectedPersonId = item.LibraryId;
-        _topView = item.NeedsReview ? "pending" : "library";
+        _selectedPersonId = item.LibraryIds.Count == 0 ? null : item.LibraryIds[0];
+        _topView = item.NeedsReview || item.LibraryIds.Count == 0 ? "pending" : "library";
     }
+
+    private List<Guid> ReadValidLibraryIds(JsonElement payload) =>
+        ReadStringList(payload, "libraryIds")
+            .Select(x => Guid.TryParse(x, out var id) ? id : Guid.Empty)
+            .Where(id => id != Guid.Empty && _store.State.People.Any(x => x.Id == id))
+            .Distinct()
+            .ToList();
 
     private List<Guid> ReadValidGroupIds(JsonElement payload) =>
         ReadStringList(payload, "groupIds")
@@ -877,7 +1145,7 @@ public sealed class MainForm : Form
     {
         var engine = ReadOcrEngine(payload);
         if (engine == "PaddleOcrV6" && !_paddleOcr.IsFullyInstalled)
-            throw new InvalidOperationException("PaddleOCR 尚未安装。选择安装后才能启用该识别引擎。");
+            throw new InvalidOperationException("PaddleOCR 尚未安装。请先打开 GitHub 安装指南完成安装。");
         var target = payload.TryGetProperty("target", out var targetValue) ? targetValue.GetString() : "settings";
         if (target == "settings") SaveOcrEngine(engine);
         await CompleteOcrEngineChangeAsync(payload, engine);
@@ -889,7 +1157,7 @@ public sealed class MainForm : Form
         if (payload.TryGetProperty("sidebarWidth", out var sidebarWidth) && sidebarWidth.TryGetInt32(out var sidebar))
             settings.SidebarWidth = Math.Clamp(sidebar, 170, 420);
         if (payload.TryGetProperty("workbenchWidth", out var workbenchWidth) && workbenchWidth.TryGetInt32(out var workbench))
-            settings.WorkbenchWidth = Math.Clamp(workbench, 360, 800);
+            settings.WorkbenchWidth = Math.Clamp(workbench, 260, 360);
         _store.Save();
     }
 
@@ -915,11 +1183,31 @@ public sealed class MainForm : Form
         _store.Save();
     }
 
+    private void SaveFavoritesFirst(JsonElement payload)
+    {
+        _store.State.Settings.FavoritesFirst =
+            payload.TryGetProperty("value", out var property) && property.ValueKind == JsonValueKind.True;
+        _store.Save();
+    }
+
+    private object ToggleFavorite(JsonElement payload)
+    {
+        var id = ReadGuid(payload, "id") ?? throw new InvalidOperationException("截图不存在。");
+        var item = _store.State.Screenshots.FirstOrDefault(x => x.Id == id)
+                   ?? throw new FileNotFoundException("截图不存在。");
+        item.IsFavorite = !item.IsFavorite;
+        _store.Save();
+        return new { id = item.Id, isFavorite = item.IsFavorite };
+    }
+
     private void SaveViewPreferences(JsonElement payload)
     {
         var settings = _store.State.Settings;
-        if (payload.TryGetProperty("viewMode", out var mode))
-            settings.ViewMode = mode.GetString() == "list" ? "list" : "grid";
+        if (payload.TryGetProperty("gridDensity", out var density) && density.TryGetInt32(out var gridDensity))
+            settings.GridDensity = Math.Clamp(gridDensity, 0, 2);
+        if (payload.TryGetProperty("sidebarHidden", out var sidebarHidden) &&
+            sidebarHidden.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            settings.SidebarHidden = sidebarHidden.GetBoolean();
         if (payload.TryGetProperty("collapsedTreeNodes", out var nodes) && nodes.ValueKind == JsonValueKind.Array)
             settings.CollapsedTreeNodes = nodes.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String)
                 .Select(x => x.GetString() ?? string.Empty)
@@ -930,7 +1218,6 @@ public sealed class MainForm : Form
     private void SaveOcrEngine(string engine)
     {
         _store.State.Settings.OcrEngine = engine;
-        _store.State.Settings.HasExplicitOcrChoice = true;
         _store.Save();
     }
 
@@ -1023,7 +1310,6 @@ public sealed class MainForm : Form
         var ids = ReadStringList(payload, "ids")
             .Select(x => Guid.TryParse(x, out var id) ? id : Guid.Empty).Where(x => x != Guid.Empty).ToHashSet();
         var action = payload.GetProperty("action").GetString();
-        var tags = action == "addTags" ? NormalizeTags(ReadStringList(payload, "tags")) : [];
         var selected = _store.State.Screenshots.Where(x => ids.Contains(x.Id)).ToList();
         if (action == "deleteForever")
         {
@@ -1042,9 +1328,8 @@ public sealed class MainForm : Form
             else if (action == "restore")
             {
                 _store.RestoreFromTrash(item, false);
-                if (!item.LibraryId.HasValue) item.NeedsReview = true;
+                if (item.LibraryIds.Count == 0) item.NeedsReview = true;
             }
-            else if (action == "addTags") item.Tags = NormalizeTags(item.Tags.Concat(tags));
         }
         _store.Save();
         _selectedScreenshotId = null;
@@ -1059,7 +1344,7 @@ public sealed class MainForm : Form
             "trash" => item.DeletedAt.HasValue,
             "pending" => !item.DeletedAt.HasValue && item.NeedsReview,
             "library" => _selectedPersonId.HasValue && !item.DeletedAt.HasValue && !item.NeedsReview &&
-                         item.LibraryId == _selectedPersonId.Value,
+                         item.LibraryIds.Contains(_selectedPersonId.Value),
             _ => false
         });
         if (!valid) _selectedScreenshotId = null;
@@ -1207,6 +1492,9 @@ public sealed class MainForm : Form
         return value.GetString() is "PaddleOcrV6" or "None" ? value.GetString() : null;
     }
 
+    private static string LimitMemberText(string value, int maxLength) =>
+        value.Length <= maxLength ? value : value[..maxLength];
+
     private static string NormalizeSearchText(string? value) =>
         string.Join(Environment.NewLine, (value ?? string.Empty).Replace("\r\n", "\n").Replace('\r', '\n')
             .Split('\n').Select(x => x.TrimEnd())).Trim();
@@ -1243,6 +1531,6 @@ public sealed class MainForm : Form
 
     private sealed record ImportDraft(byte[] Bytes, string Name, string Extension, OcrOutput Ocr, string OcrEngineKey);
     private sealed record IncomingImage(byte[] Bytes, string Name, string Extension);
-    private sealed record PendingDuplicateCommit(bool Pending, Guid? LibraryId, List<string> Tags,
+    private sealed record PendingDuplicateCommit(bool Pending, List<Guid> LibraryIds, List<string> Tags,
         string SearchText, Guid DuplicateId);
 }

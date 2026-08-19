@@ -1,4 +1,4 @@
-using System.IO.Compression;
+﻿using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -41,10 +41,23 @@ public sealed class AppStore
         if (!File.Exists(DataFilePath)) return new AppState();
         try
         {
-            var state = JsonSerializer.Deserialize<AppState>(File.ReadAllText(DataFilePath), _jsonOptions)
-                        ?? new AppState();
-            NormalizeState(state);
+            var json = File.ReadAllText(DataFilePath);
+            using var document = JsonDocument.Parse(json);
+            var sourceVersion = ReadSchemaVersion(document.RootElement);
+            ValidateSchemaVersion(sourceVersion);
+            var state = JsonSerializer.Deserialize<AppState>(json, _jsonOptions) ?? new AppState();
+            NormalizeState(state, sourceVersion);
+
+            if (sourceVersion < AppState.CurrentSchemaVersion)
+                UpgradeStoredState(state, sourceVersion);
+
             return state;
+        }
+        catch (DataVersionException)
+        {
+            // 版本不兼容或迁移失败时绝不能把现有索引当作“损坏文件”移走，
+            // 也不能用空索引继续运行后在退出时覆盖用户数据。
+            throw;
         }
         catch (Exception ex)
         {
@@ -67,15 +80,62 @@ public sealed class AppStore
     {
         lock (_gate)
         {
-            Directory.CreateDirectory(RootPath);
-            var temp = DataFilePath + ".tmp";
-            File.WriteAllText(temp, JsonSerializer.Serialize(State, _jsonOptions));
-            File.Move(temp, DataFilePath, true);
+            WriteState(State);
+        }
+    }
+
+    private void WriteState(AppState state)
+    {
+        Directory.CreateDirectory(RootPath);
+        var temp = DataFilePath + ".tmp";
+        File.WriteAllText(temp, JsonSerializer.Serialize(state, _jsonOptions));
+        File.Move(temp, DataFilePath, true);
+    }
+
+    private static int ReadSchemaVersion(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object) return 0;
+        foreach (var property in root.EnumerateObject())
+        {
+            if (string.Equals(property.Name, nameof(AppState.SchemaVersion), StringComparison.OrdinalIgnoreCase) &&
+                property.Value.TryGetInt32(out var version))
+                return version;
+        }
+        return 0;
+    }
+
+    private static void ValidateSchemaVersion(int version)
+    {
+        if (version < AppState.MinimumSupportedSchemaVersion)
+            throw new DataVersionException(
+                $"当前索引版本为 {version}，此版本只直接支持 0.4.x 及之后的数据。请先使用 QuoteVault 0.4.7 打开旧图库并保存一次，再升级。");
+        if (version > AppState.CurrentSchemaVersion)
+            throw new DataVersionException(
+                $"当前索引版本为 {version}，高于本程序支持的版本 {AppState.CurrentSchemaVersion}。请使用更新版本的 QuoteVault 打开此图库。");
+    }
+
+    private void UpgradeStoredState(AppState state, int sourceVersion)
+    {
+        try
+        {
+            var backupDirectory = Path.Combine(RootPath, "backups");
+            Directory.CreateDirectory(backupDirectory);
+            var backup = Path.Combine(backupDirectory,
+                $"data-schema-{sourceVersion}-before-{AppState.CurrentSchemaVersion}-{DateTime.Now:yyyyMMdd-HHmmss-fff}.json");
+            File.Copy(DataFilePath, backup, false);
+            WriteState(state);
+        }
+        catch (Exception ex)
+        {
+            throw new DataVersionException("索引升级失败。原 data.json 未被当作损坏文件处理，请先备份数据后再重试。", ex);
         }
     }
 
     public string GetImageFile(ScreenshotItem item) => Path.Combine(ImagePath, ValidateStoredFileName(item.StoredFileName));
     public string GetThumbnailFile(ScreenshotItem item) =>
+        Path.Combine(ThumbnailPath, Path.GetFileNameWithoutExtension(ValidateStoredFileName(item.StoredFileName)) + ".v2.jpg");
+
+    public string GetLegacyThumbnailFile(ScreenshotItem item) =>
         Path.Combine(ThumbnailPath, Path.GetFileNameWithoutExtension(ValidateStoredFileName(item.StoredFileName)) + ".jpg");
 
     public static string ComputeSha256(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
@@ -116,10 +176,12 @@ public sealed class AppStore
     {
         var file = GetImageFile(item);
         var thumbnail = GetThumbnailFile(item);
+        var legacyThumbnail = GetLegacyThumbnailFile(item);
         State.Screenshots.Remove(item);
         if (save) Save();
         TryDeleteFile(file);
         TryDeleteFile(thumbnail);
+        TryDeleteFile(legacyThumbnail);
     }
 
     public void PermanentlyDeleteMany(IEnumerable<ScreenshotItem> items)
@@ -127,10 +189,12 @@ public sealed class AppStore
         var selected = items.Distinct().ToList();
         var files = selected.Select(GetImageFile).ToList();
         var thumbnails = selected.Select(GetThumbnailFile).ToList();
+        var legacyThumbnails = selected.Select(GetLegacyThumbnailFile).ToList();
         foreach (var item in selected) State.Screenshots.Remove(item);
         Save();
         foreach (var file in files) TryDeleteFile(file);
         foreach (var thumbnail in thumbnails) TryDeleteFile(thumbnail);
+        foreach (var thumbnail in legacyThumbnails) TryDeleteFile(thumbnail);
     }
 
     public void CreateBackup(string destinationZip)
@@ -182,9 +246,13 @@ public sealed class AppStore
                 var stagedData = Path.Combine(stage, "data.json");
                 var stagedImages = Path.Combine(stage, "images");
                 Directory.CreateDirectory(stagedImages);
-                var parsed = JsonSerializer.Deserialize<AppState>(File.ReadAllText(stagedData), _jsonOptions)
+                var stagedJson = File.ReadAllText(stagedData);
+                using var stagedDocument = JsonDocument.Parse(stagedJson);
+                var stagedVersion = ReadSchemaVersion(stagedDocument.RootElement);
+                ValidateSchemaVersion(stagedVersion);
+                var parsed = JsonSerializer.Deserialize<AppState>(stagedJson, _jsonOptions)
                              ?? throw new InvalidDataException("备份数据无法读取。");
-                NormalizeState(parsed);
+                NormalizeState(parsed, stagedVersion);
                 foreach (var screenshot in parsed.Screenshots)
                 {
                     var fileName = ValidateStoredFileName(screenshot.StoredFileName);
@@ -276,6 +344,11 @@ public sealed class AppStore
             if (File.Exists(thumbnail)) continue;
             if (TryCreateThumbnail(item, GetImageFile(item))) created++;
         }
+
+        // 新版高质量缩略图全部生成后，再清理 0.5.x 的旧缓存，避免升级首屏直接加载数百张原图。
+        foreach (var legacy in Directory.EnumerateFiles(ThumbnailPath, "*.jpg")
+                     .Where(path => !path.EndsWith(".v2.jpg", StringComparison.OrdinalIgnoreCase)))
+            TryDeleteFile(legacy);
         return created;
     }
 
@@ -285,8 +358,8 @@ public sealed class AppStore
         {
             if (!File.Exists(sourcePath)) return false;
             using var source = Image.FromFile(sourcePath);
-            const int maxWidth = 560;
-            const int maxHeight = 360;
+            const int maxWidth = 960;
+            const int maxHeight = 640;
             var scale = Math.Min(1d, Math.Min((double)maxWidth / source.Width, (double)maxHeight / source.Height));
             var width = Math.Max(1, (int)Math.Round(source.Width * scale));
             var height = Math.Max(1, (int)Math.Round(source.Height * scale));
@@ -304,7 +377,10 @@ public sealed class AppStore
             var temp = destination + $".tmp-{Guid.NewGuid():N}";
             try
             {
-                thumbnail.Save(temp, ImageFormat.Jpeg);
+                var jpeg = ImageCodecInfo.GetImageEncoders().First(x => x.FormatID == ImageFormat.Jpeg.Guid);
+                using var parameters = new EncoderParameters(1);
+                parameters.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 92L);
+                thumbnail.Save(temp, jpeg, parameters);
                 File.Move(temp, destination, true);
             }
             finally
@@ -344,37 +420,54 @@ public sealed class AppStore
         }
     }
 
-    private static void NormalizeState(AppState state)
+    private static void NormalizeState(AppState state, int sourceVersion)
     {
-        var migrateLegacyScreenshots = state.SchemaVersion < 2;
-        var migrateOldDefaultHotKey = state.SchemaVersion < 3;
         state.Categories ??= [];
         state.People ??= [];
-        state.NicknameMappings ??= [];
         state.Screenshots ??= [];
         state.Settings ??= new AppSettings();
-        if (migrateOldDefaultHotKey && state.Settings.HotKeyCtrl && state.Settings.HotKeyAlt &&
-            !state.Settings.HotKeyShift && state.Settings.HotKey == Keys.F8)
-            state.Settings.HotKey = Keys.Q;
+
         state.Settings.OcrEngine = state.Settings.OcrEngine == "PaddleOcrV6" ? "PaddleOcrV6" : "None";
         state.Settings.Theme = state.Settings.Theme == "light" ? "light" : "dark";
+        // 0.5.12 将默认全局收录快捷键从 Ctrl+Alt+Q 调整为 Ctrl+Alt+V。
+        // 只迁移旧版本中恰好仍使用旧默认组合的设置，其他自定义快捷键保持不变。
+        if (sourceVersion < 6 && state.Settings.HotKeyCtrl && state.Settings.HotKeyAlt &&
+            !state.Settings.HotKeyShift && state.Settings.HotKey == Keys.Q)
+            state.Settings.HotKey = Keys.V;
         state.Settings.SidebarWidth = Math.Clamp(state.Settings.SidebarWidth, 170, 420);
-        state.Settings.WorkbenchWidth = Math.Clamp(state.Settings.WorkbenchWidth, 360, 800);
+        state.Settings.WorkbenchWidth = Math.Clamp(state.Settings.WorkbenchWidth, 260, 360);
         state.Settings.ScreenshotSort = state.Settings.ScreenshotSort is "newest" or "oldest" or "nameAsc" or "nameDesc"
             ? state.Settings.ScreenshotSort
             : "newest";
-        state.Settings.ViewMode = state.Settings.ViewMode == "list" ? "list" : "grid";
+        state.Settings.GridDensity = Math.Clamp(state.Settings.GridDensity, 0, 2);
         state.Settings.CollapsedTreeNodes ??= [];
         state.Settings.CollapsedTreeNodes = state.Settings.CollapsedTreeNodes
             .Where(x => x == "__ungrouped__" || Guid.TryParse(x, out _)).Distinct().ToList();
         state.Settings.WindowWidth = Math.Clamp(state.Settings.WindowWidth, 1120, 7680);
         state.Settings.WindowHeight = Math.Clamp(state.Settings.WindowHeight, 720, 4320);
-        foreach (var category in state.Categories) category.Name ??= "未命名群组";
+
+        var categoryIds = state.Categories.Select(x => x.Id).ToHashSet();
+        foreach (var category in state.Categories)
+        {
+            category.Name ??= "未命名群组";
+            if (category.ParentId == category.Id ||
+                category.ParentId.HasValue && !categoryIds.Contains(category.ParentId.Value))
+                category.ParentId = null;
+        }
+
         foreach (var person in state.People)
         {
             person.DisplayName ??= "未命名成员";
+            person.QqNumber ??= string.Empty;
+            person.Note ??= string.Empty;
+            person.AvatarDataUrl ??= string.Empty;
+            if (!person.AvatarDataUrl.StartsWith("data:image/png;base64,", StringComparison.OrdinalIgnoreCase))
+                person.AvatarDataUrl = string.Empty;
             person.CategoryIds ??= [];
+            person.CategoryIds = person.CategoryIds.Where(categoryIds.Contains).Distinct().ToList();
         }
+
+        var libraryIds = state.People.Select(x => x.Id).ToHashSet();
         foreach (var screenshot in state.Screenshots)
         {
             ValidateStoredFileName(screenshot.StoredFileName);
@@ -386,46 +479,24 @@ public sealed class AppStore
                                       screenshot.OcrEngine.Contains("Paddle", StringComparison.OrdinalIgnoreCase)
                 ? "PaddleOcrV6"
                 : "None";
-            screenshot.DetectedNicknames ??= [];
-            screenshot.IgnoredNicknames ??= [];
-            screenshot.PersonIds ??= [];
-            screenshot.Messages ??= [];
-            screenshot.Keywords ??= [];
             screenshot.Tags ??= [];
-            foreach (var message in screenshot.Messages)
-            {
-                message.Text ??= string.Empty;
-                message.DetectedNickname = string.IsNullOrWhiteSpace(message.DetectedNickname)
-                    ? null
-                    : message.DetectedNickname.Trim();
-            }
+            screenshot.Tags = screenshot.Tags
+                .Select(x => x?.Trim() ?? string.Empty)
+                .Where(x => x.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
-            // 0.3.x 将图库和消息发言人都保存在 PersonIds 中。升级后只取第一个有效图库，
-            // 旧消息与昵称仍保留在 JSON 中，确保升级不会丢失用户数据。
-            if (!screenshot.LibraryId.HasValue || !state.People.Any(x => x.Id == screenshot.LibraryId.Value))
-                screenshot.LibraryId = migrateLegacyScreenshots &&
-                                       screenshot.PersonIds.FirstOrDefault(id => state.People.Any(x => x.Id == id)) is var id && id != Guid.Empty
-                    ? id : null;
-            if (migrateLegacyScreenshots && string.IsNullOrWhiteSpace(screenshot.SearchText))
-                screenshot.SearchText = string.Join(Environment.NewLine,
-                    screenshot.Messages.OrderBy(x => x.SortOrder).Select(x => x.Text)
-                        .Where(x => !string.IsNullOrWhiteSpace(x))).Trim();
-            if (migrateLegacyScreenshots && screenshot.Tags.Count == 0 && screenshot.Keywords.Count > 0)
-                screenshot.Tags = screenshot.Keywords.ToList();
-            screenshot.PersonIds = screenshot.LibraryId.HasValue ? [screenshot.LibraryId.Value] : [];
-            if (!screenshot.DeletedAt.HasValue && !screenshot.NeedsReview && !screenshot.LibraryId.HasValue)
+            screenshot.LibraryIds ??= [];
+            if (screenshot.LegacyLibraryId.HasValue && libraryIds.Contains(screenshot.LegacyLibraryId.Value) &&
+                !screenshot.LibraryIds.Contains(screenshot.LegacyLibraryId.Value))
+                screenshot.LibraryIds.Add(screenshot.LegacyLibraryId.Value);
+            screenshot.LegacyLibraryId = null;
+            screenshot.LibraryIds = screenshot.LibraryIds.Where(libraryIds.Contains).Distinct().ToList();
+            if (!screenshot.DeletedAt.HasValue && !screenshot.NeedsReview && screenshot.LibraryIds.Count == 0)
                 screenshot.NeedsReview = true;
         }
-        state.SchemaVersion = 4;
-        if (!state.Settings.HasExplicitOcrChoice)
-        {
-            state.Settings.OcrEngine = "None";
-            state.Settings.HasExplicitOcrChoice = true;
-        }
-        else if (string.IsNullOrWhiteSpace(state.Settings.OcrEngine))
-        {
-            state.Settings.OcrEngine = "None";
-        }
+
+        state.SchemaVersion = AppState.CurrentSchemaVersion;
     }
 
     private static string ValidateStoredFileName(string? fileName)
@@ -444,4 +515,12 @@ public sealed class AppStore
         var safe = extension.ToLowerInvariant();
         return safe is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" ? safe : ".png";
     }
+
+}
+
+internal sealed class DataVersionException : Exception
+{
+    public DataVersionException(string message) : base(message) { }
+
+    public DataVersionException(string message, Exception innerException) : base(message, innerException) { }
 }

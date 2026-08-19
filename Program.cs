@@ -26,6 +26,11 @@ static class Program
                 : new MainForm(new AppStore(dataRoot)));
             return 0;
         }
+        catch (DataVersionException ex)
+        {
+            MessageBox.Show(ex.Message, "QuoteVault 数据版本不兼容", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return 2;
+        }
         catch (Exception ex)
         {
             var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "QuoteVault");
